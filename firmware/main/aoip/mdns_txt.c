@@ -41,15 +41,16 @@ static bool kv_int_u16(const aoip_txt_kv_t *kv, size_t n, const char *key, uint3
     return true;
 }
 
-// latency_ns is a u32 field (a 10 s latency is legal); no 0x prefix in the
-// protocol, parse strictly decimal.
+// latency_ns is a u32 field (a 10 s latency is legal). Like the fork's
+// parse_int_from_dict it accepts a "0x" hex prefix.
 static bool kv_int_u32(const aoip_txt_kv_t *kv, size_t n, const char *key, uint32_t *out)
 {
     char buf[24];
     const char *s = kv_get(kv, n, key, buf, sizeof buf);
     if (!s || !s[0]) return false;
     char *end;
-    unsigned long v = strtoul(s, &end, 10);
+    unsigned long v = (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) ? strtoul(s + 2, &end, 16)
+                                                                   : strtoul(s, &end, 10);
     if (*end) return false;
     *out = v;
     return true;
@@ -70,17 +71,21 @@ bool mdns_txt_parse_chan(const aoip_txt_kv_t *kv, size_t n, aoip_adv_chan_t *o)
 {
     memset(o, 0, sizeof *o);
     uint32_t v;
+    // nchan is *channels per flow* (fork mdns_server.rs:
+    // MAX_CHANNELS_IN_FLOW.min(channels)), not the device channel count: on
+    // a 32-channel device it advertises 8 while per-channel ids run 1..32.
+    // it advertises 8 while the per-channel ids run 1..32. The id therefore
+    // must NOT be bound by nchan (that check rejected half the device's
+    // channels); the real protocol limit is simply "fits u16, nonzero"
+    // (65537 must not wrap to 1 — CHANGELOG 0.1.3/0.1.4).
     if (!kv_int_u16(kv, n, "nchan", &v) || v == 0) return false;
     o->nchan = (uint16_t)v;
-    // The channel id must name one of the channels the device advertised;
-    // anything else is a malformed record, not a soft miss, because the
-    // id feeds flow-update lists (a wrong id routes another channel).
-    if (!kv_int_u16(kv, n, "id", &v) || v == 0 || v > o->nchan) return false;
+    if (!kv_int_u16(kv, n, "id", &v) || v == 0) return false;
     o->tx_channel_id = (uint16_t)v;
     if (!kv_int_u16(kv, n, "dbcp1", &v) || v == 0) return false;
     o->dbcp1 = (uint16_t)v;
     // The bit-depth key is "enc", older devices send "en"; either way it
-    // must parse as a 16..32 byte-aligned depth (valued the same as the
+    // must parse as a 16..32 byte-aligned depth (same policy as the
     // subscriber's post-check).
     if (!kv_int_u16(kv, n, "enc", &v) && !kv_int_u16(kv, n, "en", &v)) return false;
     if (v < 16u || v > 32u || v % 8u != 0) return false;

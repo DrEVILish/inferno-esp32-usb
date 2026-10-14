@@ -4,6 +4,45 @@ All notable changes after the initial import. Format loosely based on Keep
 a Changelog; "verifiable" = the claim is covered by a host test or
 deterministic review, "bench" = still gated on hardware.
 
+## [0.1.4] — 2026-10-14: regression audit of 0.1.3 (three induced issues found)
+
+Deep re-review of the eight-finding fix round with reliability /
+performance / Inferno-compatibility lenses. Three issues introduced by
+0.1.3 were found and fixed here:
+
+- **Inferno compat (serious):** the channel-id TXT validation added in
+  0.1.3 demanded `1 ≤ id ≤ nchan` — but the fork's `nchan` TXT is
+  *channels per flow* (`MAX_CHANNELS_IN_FLOW.min(channels)` in
+  mdns_server.rs), not the device channel count: a 32-channel device
+  advertises `nchan=8` while the per-channel ids legitimately run 1..32,
+  and its client parses `id` unbound. The bound would have made every
+  subscription to channels 9..32 of any 32-channel Inferno transmitter
+  fail to resolve. Removed; the intended protection (id must not wrap)
+  is provided by the nonzero + u16-range checks that stay. The host test
+  now pins `id=9` (nchan 8) as VALID and `id=65537` as refused.
+- **Inferno compat:** `latency_ns` parsing lost the fork's `0x` hex
+  prefix support (`parse_int_from_dict` accepts hex for all ints);
+  restored. Host-tested with a `0x1e8480` vector.
+- **Reliability:** the uncollected-search pool in the new bounded mDNS
+  resolve was sized for two phases (2×CH) while one full cycle can park
+  three phases' worth (SRV+TXT of all channels + one A query per host).
+  On a fully dead network every cycle parked 32 phase-2 handles beyond
+  the pool and leaked one search handle each, repeating. Pool sized
+  3×CH, matching the full-cycle bound (the drain-at-start still empties
+  it before the next cycle adds).
+
+Verified clean in the same audit: the ARC 0x3010/0x3014 TODO-ERROR reply
+only fires when a command cannot be enqueued (bounded 250 ms wait inside
+the held `aoip_lock` resolves bounded: queue pops need no lock); the
+enqueue-first state publish keeps the Dante "status already subscribed"
+ordering; `ctl_ensure_started()` runs off the shared lock and its retry
+cannot double-open sockets or double-start the (idempotent) subscriber;
+the bounded resolve finishes in ~7.5 s worst case with all 2·CH+CH
+parked handles reaped; parser strictness beyond the fork (nonzero dbcp1/
+fpp, depth validation at parse) only changes outcomes on records the
+fork itself would fail downstream anyway. Performance: no hot-path cost
+added (all changes are control-plane or compile-time).
+
 ## [0.1.3] — 2026-10-14: review-round 2 fixes (8 findings)
 
 All findings from the second external review round. "Fixed" items carry a

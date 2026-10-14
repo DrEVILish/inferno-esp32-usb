@@ -344,10 +344,12 @@ static void host_cache_store(const char *hostname, uint32_t ip)
 // has long elapsed, so their (discarded) results are ready and the handle
 // can be freed. Calling mdns_query_async_delete() on a still-running
 // search would report INVALID_STATE and leave the handle behind.
-// Size covers a full cycle: SRV + TXT for every channel, plus one A query
-// per host. Searches parked beyond a full pool are dropped (all 32
-// channels on 32 distinct silent hosts and a full pool is a full cycle).
-#define UNCOLLECTED_N (2u * UI_CHANNELS)
+// Size covers one full cycle: SRV + TXT for every channel plus one A
+// query per host (2*sides + 1). A dead network fills exactly this pool in
+// one cycle and drains it before the next; without the third term the
+// phase-2 A handles would overflow onto parked phase-1 handles and leak
+// in every cycle.
+#define UNCOLLECTED_N (2u * UI_CHANNELS + UI_CHANNELS)
 
 static mdns_search_once_t *s_uncollected[UNCOLLECTED_N];
 
@@ -359,9 +361,12 @@ static void uncollected_add(mdns_search_once_t *h)
             return;
         }
     }
-    // full: the search will expire on its own; the handle is left for its
-    // own library to finish (bounded, rare, and only on a fully silent
-    // network where the next resolve cycle no longer runs).
+    // Cannot happen with UNCOLLECTED_N sized for one full cycle (drain at
+    // the start of each cycle empties the pool before the next one adds);
+    // if it ever does, dropping the handle is the bounded response: the
+    // search expires on its own and the next cycle's pool stays sane.
+    (void)h;
+}
 }
 
 static void uncollected_drain(void)

@@ -27,8 +27,9 @@ typedef struct {
 
 // Parse one _netaudio-chan advertisement. Returns false if anything is
 // missing, malformed, or out of range: ints must fit u16, tx_channel_id
-// must name one of the advertised channels (1..nchan), fpp bounds are
-// 16-bit and nonzero, bit depth is a 16..32 byte-aligned value.
+// must be nonzero (the fork's "nchan" is channels-per-flow and does NOT
+// bound the id — do not introduce such a bound), fpp bounds are 16-bit
+// and nonzero, bit depth is a 16..32 byte-aligned value.
 bool mdns_txt_parse_chan(const aoip_txt_kv_t *kv, size_t n, aoip_adv_chan_t *o);
 
 // Parse one _netaudio-bund advertisement. Same rules; the media address

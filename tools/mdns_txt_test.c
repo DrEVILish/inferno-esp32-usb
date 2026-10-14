@@ -74,19 +74,25 @@ int main(void)
     OK(ch.min_latency_ns == 1000000);
     OK(ch.has_bundle && ch.bundle_id == 1 && ch.channel_in_bundle == 4);
 
-    // id must name one of the advertised channels: 0, out of range, and the
-    // wrap case (id=65537 -> 1) are all refused before narrowing.
+    // id must be nonzero and 16-bit — but NOT bound by nchan: the fork's
+    // nchan is "channels per flow" (8 on a 32-channel device) while ids
+    // legitimately run 1..32 (fork mdns_server.rs / mdns_client.rs).
     {
         static const row_t t[] = { { "nchan", "8" }, { "id", "0" }, CHAN_BASE, { NULL, NULL } };
         OK(!chan_ok(t, NULL));
-        static const row_t t2[] = { { "nchan", "8" }, { "id", "9" }, CHAN_BASE, { NULL, NULL } };
-        OK(!chan_ok(t2, NULL));
-        static const row_t t3[] = { { "nchan", "8" }, { "id", "65537" }, CHAN_BASE, { NULL, NULL } };
-        OK(!chan_ok(t3, NULL));
-        static const row_t t4[] = { { "nchan", "65537" }, { "id", "1" }, CHAN_BASE, { NULL, NULL } };
-        OK(!chan_ok(t4, NULL));
-        static const row_t t5[] = { { "nchan", "0" }, { "id", "1" }, CHAN_BASE, { NULL, NULL } };
+        static const row_t t2[] = { { "nchan", "8" }, { "id", "65537" }, CHAN_BASE, { NULL, NULL } };
+        OK(!chan_ok(t2, NULL));     // the wrap case that started this rule
+        // id beyond nchan: channels 9..32 of a 32-ch device (nchan=8) are valid.
+        static const row_t t3[] = { { "nchan", "8" }, { "id", "31" }, CHAN_BASE, { NULL, NULL } };
+        OK(chan_ok(t3, &ch));
+        OK(ch.tx_channel_id == 31);
+        static const row_t t4[] = { { "nchan", "8" }, { "id", "9" }, CHAN_BASE, { NULL, NULL } };
+        OK(chan_ok(t4, &ch));       // regression test: 0.1.3 refused exactly this
+        OK(ch.tx_channel_id == 9);
+        static const row_t t5[] = { { "nchan", "65537" }, { "id", "1" }, CHAN_BASE, { NULL, NULL } };
         OK(!chan_ok(t5, NULL));
+        static const row_t t6[] = { { "nchan", "0" }, { "id", "1" }, CHAN_BASE, { NULL, NULL } };
+        OK(!chan_ok(t6, NULL));
     }
 
     // Depth: the old "en" fallback still accepted; malformed depths refused.
@@ -132,7 +138,8 @@ int main(void)
         OK(!chan_ok(t6, NULL));
     }
 
-    // latency_ns is a u32 field (no wrap risk), still required.
+    // latency_ns is a u32 field (no wrap risk), still required; the fork's
+    // parse_int accepts a "0x" prefix.
     {
         static const row_t t[] = { { "nchan", "8" }, { "id", "1" }, { "dbcp1", "0x1102" },
                                    { "enc", "24" }, { "fpp", "32,2" }, { NULL, NULL } };
@@ -141,6 +148,11 @@ int main(void)
                                     { "enc", "24" }, { "fpp", "32,2" },
                                     { "latency_ns", "4294967295" }, { NULL, NULL } };
         OK(chan_ok(t2, NULL));
+        static const row_t t3[] = { { "nchan", "8" }, { "id", "1" }, { "dbcp1", "0x1102" },
+                                    { "enc", "24" }, { "fpp", "32,2" },
+                                    { "latency_ns", "0x1e8480" }, { NULL, NULL } };
+        OK(chan_ok(t3, &ch));
+        OK(ch.min_latency_ns == 2000000u);
     }
 
     // Bundle reference keys: bad value/id keys are skipped (has_bundle
