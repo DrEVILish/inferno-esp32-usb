@@ -1,0 +1,87 @@
+# usb-inferno — Waveshare ESP32-P4-ETH (ESP32-P4, 768 KB HP L2MEM, IP101 RMII PHY, 32 MB NOR flash, 32 MB in-package PSRAM)
+CONFIG_IDF_TARGET="esp32p4"
+
+# Flash / partitions
+# The board carries 32 MB NOR. We declare 16 MB on purpose: >16 MB needs 4-byte
+# addressing support for the specific flash part, and the firmware + NVS use < 4 MB.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# CPU / RTOS
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_360=y
+CONFIG_FREERTOS_HZ=1000
+CONFIG_FREERTOS_UNICORE=n
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=5
+CONFIG_ESP_INT_WDT=y
+
+# PSRAM present on the module; audio rings stay in internal RAM (DMA, latency)
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
+
+# Ethernet: internal EMAC + IP101 over RMII, 50 MHz REF_CLK in on GPIO50 (Waveshare: IP101 clock output; rev 1 board: oscillator)
+# (pins, RMII mode and the PHY are set in code: net/net.c). IP101 runs on IDF's
+# generic 802.3 PHY driver, so no registry component is needed.
+CONFIG_ETH_ENABLED=y
+CONFIG_ETH_USE_ESP32_EMAC=y
+CONFIG_ETH_USE_SPI_ETHERNET=n
+CONFIG_ETH_USE_OPENETH=n
+# EMAC RX/TX paths in IRAM (24k+ frames/s)
+CONFIG_ETH_IRAM_OPTIMIZATION=y
+CONFIG_ETH_DMA_BUFFER_SIZE=1600
+# Audio arrives at up to ~24k frames/s (48k at the 0.5/0.25 ms latency
+# profiles). IDF v6.1 caps the RX ring at 30 in Kconfig; the project-local
+# override components/esp_eth (patches/esp_eth-rx64.patch,
+# tools/esp_eth_override.sh) raises the cap to 64: ~2.7 ms at 24k frames/s,
+# 102 KB of internal DMA RAM. net.c also sets the RX DMA to hold frames
+# instead of flushing them when the ring is full, so a burst backs up into
+# the MTL FIFO instead of being dropped by the DMA.
+CONFIG_ETH_DMA_RX_BUFFER_NUM=64
+CONFIG_ETH_DMA_TX_BUFFER_NUM=30
+# PTP Delay_Req (hw timestamped), audio TX and lwIP share one TX descriptor ring
+CONFIG_ETH_TRANSMIT_MUTEX=y
+
+# lwIP
+# IGMP is always compiled into IDF's lwIP (LWIP_IGMP 1 in lwipopts.h)
+CONFIG_LWIP_IPV6=n
+CONFIG_LWIP_AUTOIP=y
+# DHCP DISCOVERs before falling back to a link-local address
+CONFIG_LWIP_AUTOIP_TRIES=2
+CONFIG_LWIP_DHCP_RESTORE_LAST_IP=y
+CONFIG_LWIP_UDP_RECVMBOX_SIZE=64
+CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=64
+CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU1=y
+CONFIG_LWIP_TCPIP_TASK_PRIO=18
+CONFIG_LWIP_SO_RCVBUF=y
+
+# mDNS
+CONFIG_MDNS_TASK_AFFINITY_CPU1=y
+
+# AoIP (aoip/): 32 TX channel services (+ renamed aliases) + arc + cmc + bundles
+CONFIG_MDNS_MAX_SERVICES=96
+CONFIG_MDNS_ACTION_QUEUE_LEN=64
+CONFIG_MDNS_ENABLE_CONSOLE_CLI=n
+# the AoIP module registers net_netif() itself (link-local posts no GOT_IP event)
+CONFIG_MDNS_PREDEF_NETIF_STA=n
+CONFIG_MDNS_PREDEF_NETIF_AP=n
+CONFIG_MDNS_PREDEF_NETIF_ETH=n
+# AoIP sockets (max 58: FD_SETSIZE 64 minus stdio): 4 servers + up to 32 RX keepalive sockets + flow-control client
+CONFIG_LWIP_MAX_SOCKETS=48
+CONFIG_LWIP_MAX_UDP_PCBS=64
+
+# USB: TinyUSB device on the HS OTG port (rhport 1). Configured in
+# main/usb/tusb/tusb_config.h (no esp_tinyusb, so no CONFIG_TINYUSB_* options).
+
+# esp_timer ISR dispatch for sub-ms callbacks
+CONFIG_ESP_TIMER_SUPPORTS_ISR_DISPATCH_METHOD=y
+
+# Console on UART0 (CH343 on the USB-C). Never log from audio paths; use UDP telemetry.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=921600
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# Telemetry: per-core idle share (cpu0_idle_pct / cpu1_idle_pct), 64-bit counters
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+CONFIG_FREERTOS_RUN_TIME_COUNTER_TYPE_U64=y

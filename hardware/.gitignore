@@ -1,0 +1,9 @@
+# SKiDL / KiCad by-products
+usb_inferno.erc
+usb_inferno.log
+usb_inferno_sklib.py
+*.kicad_prl
+*-backups/
+fp-info-cache
+__pycache__/
+*.lck

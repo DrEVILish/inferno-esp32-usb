@@ -1,0 +1,7 @@
+dependencies:
+  idf: ">=6.0"
+  espressif/mdns: "^1.8.0"
+  # TinyUSB device stack (DWC2, HS OTG on the ESP32-P4). Used directly, without
+  # esp_tinyusb: our own descriptors (64 channel-name strings) and our own UAC2
+  # class driver (usb/uac2.c). Config: usb/tusb/tusb_config.h.
+  espressif/tinyusb: "~0.21.0"

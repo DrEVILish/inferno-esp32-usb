@@ -1,0 +1,76 @@
+menu "usb-inferno build profile"
+
+    # The shipped device has no runtime options. These build-time selections
+    # exist for the latency/channel test matrix (docs/21-latency-matrix.md,
+    # tools/build-matrix.sh) and the bench test variants. Defaults are the
+    # production build.
+
+    choice USBINF_CHANNELS_CHOICE
+        prompt "Channels per direction (USB and network)"
+        default USBINF_CH_32
+
+        config USBINF_CH_32
+            bool "32 x 32"
+        config USBINF_CH_16
+            bool "16 x 16"
+        config USBINF_CH_8
+            bool "8 x 8"
+        config USBINF_CH_4
+            bool "4 x 4"
+        config USBINF_CH_2
+            bool "2 x 2"
+    endchoice
+
+    config USBINF_CHANNELS
+        int
+        default 32 if USBINF_CH_32
+        default 16 if USBINF_CH_16
+        default 8 if USBINF_CH_8
+        default 4 if USBINF_CH_4
+        default 2 if USBINF_CH_2
+
+    choice USBINF_LAT_PROFILE_CHOICE
+        prompt "Latency profile (round-trip target with a computer in the loop)"
+        default USBINF_LAT_10
+        help
+            Sets the AoIP latency, frames per packet and the USB OUT lead
+            (app_config.h, docs/14-latency.md). Values come from the PROFILES
+            table in tools/latency_matrix.py.
+
+        config USBINF_LAT_10
+            bool "10 ms: AoIP 1 ms, fpp 16, USB lead 1 ms (production default)"
+        config USBINF_LAT_6
+            bool "6 ms: AoIP 1 ms, fpp 16, USB lead 0.25 ms"
+        config USBINF_LAT_4
+            bool "4 ms: AoIP 0.5 ms, fpp 8, USB lead 0.25 ms"
+        config USBINF_LAT_2
+            bool "2 ms: AoIP 0.25 ms, fpp 4, USB lead 0.25 ms (direct link)"
+    endchoice
+
+    config USBINF_LAT_PROFILE
+        int
+        default 10 if USBINF_LAT_10
+        default 6 if USBINF_LAT_6
+        default 4 if USBINF_LAT_4
+        default 2 if USBINF_LAT_2
+
+    config USBINF_TEST_USB_LOOPBACK
+        bool "Test: route USB OUT straight back to USB IN (no network audio)"
+        default n
+        help
+            USB capture channel N returns playback channel N, delayed by a
+            fixed number of frames. Network discovery/PTP still run. Used for
+            milestone M1 (bit-exact USB round trip) and matrix mode C.
+
+    config USBINF_TEST_NET_LOOPBACK
+        bool "Test: route network RX straight back to network TX (no USB)"
+        default n
+        help
+            Network TX channel N carries network RX channel N. Used to test
+            the AoIP paths without a USB host (matrix mode B).
+
+    config USBINF_TEST_TONE
+        bool "Test: network TX channel N carries a -20 dBFS sine at N x 100 Hz (ignores USB)"
+        default n
+
+endmenu

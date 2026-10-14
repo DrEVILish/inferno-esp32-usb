@@ -1,0 +1,14 @@
+# Reference clones (study only, never committed)
+third_party/
+build/
+sdkconfig
+sdkconfig.old
+managed_components/
+*.pcap
+*.pcapng
+firmware/build/
+firmware/managed_components/
+firmware/dependencies.lock
+work/
+firmware/build-*/
+.DS_Store

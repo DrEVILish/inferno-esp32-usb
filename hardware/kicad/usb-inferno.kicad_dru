@@ -1,0 +1,33 @@
+(version 1)
+# usb-inferno rev 1 custom rules (KiCad 9). See docs/40-board-rev1.md section 10.
+
+(rule "USB HS pair skew"
+  (condition "A.inDiffPair('USB_D*') || A.inDiffPair('USB_CONN_D*')")
+  (constraint skew (max 0.15mm))
+  (constraint diff_pair_uncoupled (max 2mm)))
+
+(rule "USB HS keep on top layer, minimal vias"
+  (condition "A.NetClass == 'USB_HS_90R'")
+  (constraint via_count (max 2)))
+
+(rule "Ethernet MDI pair skew"
+  (condition "A.inDiffPair('MDI_T*') || A.inDiffPair('MDI_R*')")
+  (constraint skew (max 0.3mm))
+  (constraint diff_pair_uncoupled (max 3mm)))
+
+(rule "RMII lines short"
+  (condition "A.NetClass == 'RMII_50R'")
+  (constraint length (max 40mm)))
+
+(rule "50 MHz REF_CLK branches equal (IP101 6.1)"
+  (condition "A.NetName == 'REF_CLK_MAC' || A.NetName == 'REF_CLK_PHY'")
+  (constraint length (min 4mm) (max 14mm))
+  (constraint via_count (max 1)))
+
+(rule "Crystal traces: no vias (HDG 1.4.2)"
+  (condition "A.NetClass == 'CLK_XTAL' || A.NetName == 'XTAL_IN' || A.NetName == 'XTAL_OUT'")
+  (constraint via_count (max 0)))
+
+(rule "Chassis isolation"
+  (condition "A.NetName == 'CHASSIS' && B.NetName != 'CHASSIS' && !A.memberOfFootprint('J*') && !B.memberOfFootprint('J*')")
+  (constraint clearance (min 0.4mm)))

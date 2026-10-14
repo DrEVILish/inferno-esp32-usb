@@ -1,0 +1,19 @@
+Raise the ESP32 EMAC RX DMA descriptor cap from 30 to 64 (usb-inferno, A4).
+Apply in firmware/ with: patch -p1 < ../patches/esp_eth-rx64.patch
+(tools/esp_eth_override.sh re-creates firmware/components/esp_eth from $IDF_PATH).
+
+--- a/components/esp_eth/Kconfig
++++ b/components/esp_eth/Kconfig
+@@ -23,7 +23,11 @@
+ 
+         config ETH_DMA_RX_BUFFER_NUM
+             int "Amount of Ethernet DMA Rx buffers"
+-            range 3 30
++            # usb-inferno: upstream caps this at 30. Nothing in the driver is
++            # sized by a narrower type (descriptors are chained, indices are
++            # int/uint32_t), so the cap only limits memory use. 64 buffers
++            # absorb ~2.7 ms of 24 k frames/s (patches/esp_eth-rx64.patch).
++            range 3 64
+             default 10 if IDF_TARGET_ESP32 #ESP32 has bigger internal Rx FIFO
+             default 20
+             help

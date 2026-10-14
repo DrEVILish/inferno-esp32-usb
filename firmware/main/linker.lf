@@ -1,0 +1,15 @@
+# usb-inferno: keep the USB interrupt path running during SPI-flash writes
+# (NVS commits). The DWC2 interrupt is allocated with ESP_INTR_FLAG_IRAM
+# (usb/uac2.c, __wrap_esp_intr_alloc), so everything it reaches must be in
+# IRAM and its constant data in internal RAM. "noflash" places both .text
+# (-> IRAM) and .rodata (-> DRAM, e.g. dcd_dwc2's _dwc2_controller table).
+#
+# Our own ISR code (usb/uac2.c, usb/uac2_engine.c, audio/ring.c,
+# clock/mediaclock.c) is marked IRAM_ATTR in the source. tools/check_iram.py
+# verifies the whole call graph after every build (tools/build.sh).
+[mapping:usbinf_tinyusb_iram]
+archive: libespressif__tinyusb.a
+entries:
+    dcd_dwc2 (noflash)
+    usbd (noflash)
+    tusb_fifo (noflash)
