@@ -168,11 +168,24 @@ defaults.
   Dante Controller. Names limited to `[A-Za-z0-9-]`, ≤ 31 chars.
 - Empty channel name in a rename = back to the factory name (Inferno would
   store "").
-- Sample-rate / latency / encoding changes: unknown opcodes (ARC 0x1101,
-  info 0x81, …) get no reply, as Inferno. Board info flags advertise no
-  sample-rate configuration.
-- Clock stats: leader id = EUI-64 of the PTPv1 leader UUID (Inferno reads an
-  8-byte id from its clock daemon; layout assumed).
+- Sample-rate / latency / encoding changes: ARC 0x1101 writes are refused
+  (0x30, empty) — latency is a build-time profile here, not settable; the
+  fork (DrEVILish/inferno) accepts 0.5–10 ms via 0x1101. 0x1100 answers the
+  six read-only records (rate; default/configured/active latency = the
+  profile latency; max 10 ms; min 0.25 ms) and 0x1102 the 31-entry property
+  directory, both byte-identical in form to the fork. Board info flags still
+  advertise no sample-rate/encoding configuration (fork claims them because
+  its settings path exists). Host-tested: `tools/aoip_host_test.sh`.
+- TX flow labels (ARC 0x2204): empty page (`02 00`), as the fork — the
+  device keeps no labels.
+- Capability statuses 0x80 (rate) / 0x82 (encoding) are announced at startup
+  and on 0x81/0x83 probes, requested = current (fork form, single-value
+  lists). Clock stats use the fork's 188 B template (locked follower,
+  slave ports, EUI-64 identities), sent on 0x21 probes once the PTP leader
+  is known; host-tested byte-identical against the fork template.
+- Clock stats: leader id = the 8-byte PTPv1 leader identity from
+  `mc_leader_id` (fork reads it from its clock daemon); parent/grandmaster
+  EUI-64s are derived from its first 6 bytes (assumed layout).
 - Heartbeat 0x8001/0x8003 are always present (our clock always exists);
   Inferno omits them without a clock.
 - Multicast TX: no mDNS address-conflict check / in-addr reservation during
@@ -197,6 +210,9 @@ defaults.
 
 Tools: `tools/aoip_probe.py <ip> [info|tx|rx|flows|subscribe|unsubscribe|rename-*]`
 (ARC/CMC client), telemetry `aoip_*` keys on UDP 7779, Wireshark.
+Host tests (no hardware): `tools/aoip_host_test.sh` checks the ARC
+(0x2204/0x1100/0x1101/0x1102) and info-mcast (capability, clock) replies
+byte-for-byte against DrEVILish/inferno vectors.
 Peers: Dante Controller (Windows/macOS) and Inferno on Linux
 (`inferno2pipe` / ALSA plugin, `RX_CHANNELS/TX_CHANNELS`, 48 kHz), one PTPv1
 leader (a Dante device or Inferno's clock).

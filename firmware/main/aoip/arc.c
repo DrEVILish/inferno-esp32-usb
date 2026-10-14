@@ -480,6 +480,58 @@ static uint16_t op_set_device_name(const uint8_t *c, size_t clen)
 }
 
 // ---------------------------------------------------------------------------
+// 0x1100 device settings, 0x1102 property directory
+// ---------------------------------------------------------------------------
+// Latency bounds announced to controllers (fork MIN/MAX_LATENCY_NS). The
+// device latency itself is fixed by the build profile (UI_NET_LATENCY_NS),
+// so default, configured and active all report it.
+#define ARC_LAT_MIN_NS              500000u
+#define ARC_LAT_MAX_NS              10000000u
+
+static uint16_t op_device_settings(bb_t *bb)
+{
+    // fork device_settings_response: [02][count], then (id, value offset
+    // from the start of the packet) records, then the u32BE values: sample
+    // rate (0x8020) and default/configured/active/maximum/minimum latency
+    // in ns (0x8204/0x8205/0x8301/0x8302/0x8306).
+    static const uint16_t ids[6] = { 0x8020u, 0x8204u, 0x8205u, 0x8301u, 0x8302u, 0x8306u };
+    const uint32_t vals[6] = {
+        UI_SAMPLE_RATE, UI_NET_LATENCY_NS, UI_NET_LATENCY_NS,
+        UI_NET_LATENCY_NS, ARC_LAT_MAX_NS, ARC_LAT_MIN_NS,
+    };
+    bb_u8(bb, 2);
+    bb_u8(bb, 6);
+    for (unsigned i = 0; i < 6; i++) {
+        bb_u16(bb, ids[i]);
+        bb_u16(bb, (uint16_t)(RR_HEADER_LEN + 2u + 6u * 4u + i * 4u));
+    }
+    for (unsigned i = 0; i < 6; i++) bb_u32(bb, vals[i]);
+    return RR_CODE_OK;
+}
+
+static uint16_t op_property_directory(bb_t *bb)
+{
+    // fork property_directory_response: u16 count, then (id, flags) pairs;
+    // flags 1 = read, 3 = read/write. The set a hardware interface announces.
+    static const uint16_t props[31][2] = {
+        { 0x8020u, 1 }, { 0x8021u, 3 }, { 0x0022u, 3 }, { 0x0023u, 3 },
+        { 0x0024u, 1 }, { 0x8060u, 3 }, { 0x0062u, 3 }, { 0x0063u, 1 },
+        { 0x0201u, 3 }, { 0x8204u, 3 }, { 0x8205u, 3 }, { 0x020au, 1 },
+        { 0x020bu, 1 }, { 0x0210u, 3 }, { 0x0211u, 3 }, { 0x0212u, 3 },
+        { 0x0213u, 1 }, { 0x0214u, 1 }, { 0x0222u, 3 }, { 0x8301u, 3 },
+        { 0x8306u, 1 }, { 0x8302u, 1 }, { 0x8321u, 1 }, { 0x0310u, 1 },
+        { 0x0311u, 1 }, { 0x0312u, 1 }, { 0x0303u, 3 }, { 0x83f0u, 1 },
+        { 0x0601u, 1 }, { 0x0309u, 1 }, { 0x0209u, 1 },
+    };
+    bb_u16(bb, 31);
+    for (unsigned i = 0; i < 31; i++) {
+        bb_u16(bb, props[i][0]);
+        bb_u16(bb, props[i][1]);
+    }
+    return RR_CODE_OK;
+}
+
+// ---------------------------------------------------------------------------
 size_t arc_handle(const uint8_t *req, size_t len, uint8_t *out, size_t cap)
 {
     if (len < RR_HEADER_LEN) return 0;
@@ -550,11 +602,23 @@ size_t arc_handle(const uint8_t *req, size_t len, uint8_t *out, size_t cap)
         code = arc_paginate(&bb, c, clen, AOIP_RX_FLOW_SLOTS < 16 ? AOIP_RX_FLOW_SLOTS : 16, 2,
                             AOIP_RX_FLOW_SLOTS, rx_flow_item, NULL);
         break;
-    case ARC_OP_UNKNOWN_1100:
-        bb_zeros(&bb, ARC_1100_REPLY_LEN);
+    case ARC_OP_DEVICE_SETTINGS:
+        code = op_device_settings(&bb);
         break;
-    case ARC_OP_UNKNOWN_1102:
-        bb_zeros(&bb, ARC_1102_REPLY_LEN);
+    case ARC_OP_DEVICE_SETTINGS_WRITE:
+        // Latency is a build-time profile on this device (no 0x1101 write
+        // path exists); refuse cleanly instead of timing the controller out.
+        code = ARC_CODE_SETTINGS_REFUSED;
+        break;
+    case ARC_OP_PROPERTY_DIRECTORY:
+        code = op_property_directory(&bb);
+        break;
+    case ARC_OP_TX_FLOW_LABELS:
+        // The device keeps no flow labels: an empty page, as netaudio's own
+        // virtual device answers it (fork 1491622). Ends the controller's
+        // per-poll wait for this query.
+        bb_u8(&bb, 2);   // page size marker
+        bb_u8(&bb, 0);   // no records
         break;
     case ARC_OP_UNKNOWN_3300: {
         const uint8_t r[8] = ARC_3300_REPLY;

@@ -119,10 +119,45 @@ static void send_product_info(void)
     send_info(op, c, sizeof c);
 }
 
+static void send_capability_status(const uint8_t op[8], uint32_t current, uint16_t update_mode)
+{
+    // fork capability_status_content: u16 0x0018, u16 count, u32 current,
+    // u32 requested (= current: no change is ever pending on this fixed
+    // device), u16 update mode, u16 0, then the supported values.
+    // Single-value lists: the running rate / width only.
+    uint8_t c[16 + 4];
+    bb_t bb;
+    bb_init(&bb, c, sizeof c);
+    bb_u16(&bb, 0x18);
+    bb_u16(&bb, 1);
+    bb_u32(&bb, current);
+    bb_u32(&bb, current);
+    bb_u16(&bb, update_mode);
+    bb_u16(&bb, 0);
+    bb_u32(&bb, current);
+    send_info(op, c, bb.len);
+}
+
+static void send_sample_rate_status(void)
+{
+    const uint8_t op[8] = MC_OP_CAP_RATE;
+    send_capability_status(op, UI_SAMPLE_RATE, 0);   // SAMPLE_RATE_UPDATE_MODE
+}
+
+static void send_encoding_status(void)
+{
+    const uint8_t op[8] = MC_OP_CAP_ENC;
+    send_capability_status(op, UI_NET_BITS, 1);      // ENCODING_UPDATE_MODE
+}
+
 void info_send_board_and_product(void)
 {
     send_board_info();
     send_product_info();
+    // Capability statuses, announced unprompted like the fork: requested =
+    // current (no change is ever pending on this fixed device).
+    send_sample_rate_status();
+    send_encoding_status();
 }
 
 static void send_clock_stats(void)
@@ -130,24 +165,57 @@ static void send_clock_stats(void)
     uint8_t id[8];
     mc_leader_id(id);
     static const uint8_t zero[8];
-    // Inferno answers only when it knows the leader (clock-stats file found).
+    // Inferno answers only when it knows the leader.
     if (memcmp(id, zero, 8) == 0) return;
-    // mc_leader_id gives the PTPv1 sourceUuid (MAC) + port id; Inferno sends an
-    // 8-byte clock id, which we take to be the EUI-64 of that MAC (unverified).
-    const uint8_t leader[8] = { id[0], id[1], id[2], 0xff, 0xfe, id[3], id[4], id[5] };
-    uint8_t c[8 + 4 + 6 + 2 + 8 + 8 + 76];
-    bb_t bb;
-    bb_init(&bb, c, sizeof c);
-    const uint8_t head[8] = { 0x00, 0x03, 0x00, 0x03, 0x00, 0x00, 0x00, 0x9f };
-    bb_put(&bb, head, 8);
-    bb_u32(&bb, (uint32_t)mc_freq_ppb());
-    bb_put(&bb, g_aoip.mac, 6);
-    bb_u16(&bb, 0);
-    bb_put(&bb, leader, 8);
-    bb_put(&bb, leader, 8);
-    bb_zeros(&bb, 76);
+    // fork CLOCK_STATUS_TEMPLATE (188 B): sync state, slave port states,
+    // flags, freq offset, MACs, leader, port records, EUI-64 identities.
+    static const uint8_t tmpl[188] = {
+        0x00, 0x02, 0x00, 0x09, 0x00, 0x00, 0x00, 0x9f,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // 0x00
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // 0x10
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x34,
+        0x00, 0x09, 0x00, 0x00, 0x02, 0x94, 0x00, 0x00, // 0x20
+        0x00, 0x03, 0x0d, 0x40, 0x00, 0x00, 0x00, 0x02,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // 0x30
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x01, 0x00, 0x60, 0x0c, 0x00, // 0x40
+        0x00, 0x00, 0x00, 0x0c, 0x00, 0x98, 0x00, 0x20,
+        0x00, 0x03, 0x00, 0x00, 0x00, 0x68, 0x10, 0x00, // 0x50
+        0x00, 0x00, 0x00, 0x01, 0x01, 0x02, 0x01, 0x00,
+        0x00, 0x00, 0x00, 0x02, 0x00, 0x09, 0x00, 0x07, // 0x60
+        0x00, 0x01, 0x00, 0x02, 0x02, 0x02, 0x02, 0x00,
+        0x00, 0x00, 0x00, 0x02, 0x00, 0x03, 0x00, 0x03, // 0x70
+        0x00, 0x01, 0x00, 0x03, 0x02, 0x02, 0x01, 0x00,
+        0x00, 0x00, 0x00, 0x02, 0x00, 0x03, 0x00, 0x07, // 0x80
+        0x00, 0x03, 0x00, 0x07, 0x00, 0xb8, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // 0x90
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // 0xa0
+        0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
+        0x00, 0x01, 0x00, 0x00, // 0xb0
+    };
+    uint8_t c[sizeof tmpl];
+    memcpy(c, tmpl, sizeof c);
+    // fork build_clock_status: locked follower (3), slave port states (9),
+    // flags, freq offset, MAC, leader twice, EUI-64 identities.
+    c[0x00] = 0x00; c[0x01] = 0x03;
+    c[0x02] = 0x00; c[0x03] = 0x09;
+    c[0x28] = 0x00; c[0x29] = 0x09;
+    wr32(c + 0x04, 0x9fu);
+    wr32(c + 0x08, (uint32_t)mc_freq_ppb());
+    memcpy(c + 0x0c, g_aoip.mac, 6);
+    memcpy(c + 0x14, id, 8);
+    memcpy(c + 0x1c, id, 8);
+    c[0x6c] = 0x00; c[0x6d] = 0x09;
+    uint8_t own64[8] = { g_aoip.mac[0], g_aoip.mac[1], g_aoip.mac[2], 0xff, 0xfe,
+                         g_aoip.mac[3], g_aoip.mac[4], g_aoip.mac[5] };
+    uint8_t par64[8] = { id[0], id[1], id[2], 0xff, 0xfe, id[3], id[4], id[5] };
+    memcpy(c + 0x98, own64, 8);
+    memcpy(c + 0xa0, par64, 8);
+    memcpy(c + 0xa8, par64, 8);
     const uint8_t op[8] = MC_OP_CLOCK_STATS;
-    send_info(op, c, bb.len);
+    send_info(op, c, sizeof c);
 }
 
 static void send_network_info(void)
@@ -194,6 +262,12 @@ void info_on_request(const uint8_t *pkt, size_t len)
         send_info(op, content, sizeof content);
         break;
     }
+    case MC_REQ_CAP_RATE:
+        send_sample_rate_status();
+        break;
+    case MC_REQ_CAP_ENC:
+        send_encoding_status();
+        break;
     default:
         break;
     }

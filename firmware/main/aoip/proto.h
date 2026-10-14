@@ -58,8 +58,10 @@
 #define ARC_OP_SET_SUBSCRIPTIONS    0x3010u
 #define ARC_OP_NETAUDIO_UNSUBSCRIBE 0x3014u // used by network-audio-controller
 #define ARC_OP_QUERY_RX_FLOWS       0x3200u
-#define ARC_OP_UNKNOWN_1100         0x1100u // "used by DC", answered with 110 zero bytes
-#define ARC_OP_UNKNOWN_1102         0x1102u // answered with 94 zero bytes
+#define ARC_OP_DEVICE_SETTINGS        0x1100u // device settings (rate, latency)
+#define ARC_OP_DEVICE_SETTINGS_WRITE  0x1101u // refused (0x30): latency is build-time, not settable
+#define ARC_OP_PROPERTY_DIRECTORY     0x1102u // property id/flags directory
+#define ARC_OP_TX_FLOW_LABELS         0x2204u // empty page: the device keeps no flow labels
 #define ARC_OP_UNKNOWN_3300         0x3300u // "WTF: necessary to avoid 'clock domain mismatch'"
 // NOT in Inferno: device rename as sent by network-audio-controller
 // ("netaudio device config --name"), content = new name, NUL-terminated;
@@ -67,9 +69,8 @@
 #define ARC_OP_SET_DEVICE_NAME      0x1001u
 
 #define ARC_CODE_2320               0x30u
+#define ARC_CODE_SETTINGS_REFUSED   0x30u // 0x1101 write: latency is not settable on this device
 #define ARC_3300_REPLY              { 0x38, 0x00, 0x38, 0xfd, 0x38, 0xfe, 0x38, 0xff }
-#define ARC_1100_REPLY_LEN          110u
-#define ARC_1102_REPLY_LEN          94u
 #define ARC_DEVICE_NAMES_START_CODE 0x2729u
 #define ARC_DEVICE_NAMES_OP_1102    0x1102u
 #define ARC_REVISION_STRING         ":705"  // written with its NUL
@@ -126,12 +127,16 @@
 #define MC_OP_REPLY_78              { 0x07, 0x2a, 0x00, 0x78, 0, 0, 0, 0 }
 #define MC_OP_CHANNEL_CHANGE        { 0x07, 0x2a, 0x01, 0x02, 0, 0, 0, 0 }
 #define MC_OP_HEARTBEAT             { 0x00, 0x08, 0x00, 0x01, 0x10, 0, 0, 0 }
+#define MC_OP_CAP_RATE              { 0x07, 0x24, 0x00, 0x80, 0, 0, 0, 0 }
+#define MC_OP_CAP_ENC               { 0x07, 0x24, 0x00, 0x82, 0, 0, 0, 0 }
 // request opcode byte [3] (bytes 24..31 of the request: 07 ?? 00 XX 00 00 00 ??)
 #define MC_REQ_BOARD_INFO           0x61u
 #define MC_REQ_PRODUCT_INFO         0xc1u
 #define MC_REQ_CLOCK_STATS          0x21u
 #define MC_REQ_NETWORK_INFO         0x13u
 #define MC_REQ_77                   0x77u
+#define MC_REQ_CAP_RATE             0x81u
+#define MC_REQ_CAP_ENC              0x83u
 #define MC_REPLY_78_CONTENT         { 0, 0, 0, 3, 0, 0, 0, 0 }
 
 #define MC_BOARD_INFO_LEN           200u
