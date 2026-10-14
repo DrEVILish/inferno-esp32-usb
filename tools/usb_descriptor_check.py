@@ -53,7 +53,10 @@ def from_elf(path):
     except ImportError:
         sys.exit("pyelftools missing: run with the ESP-IDF python env")
     f = ELFFile(open(path, "rb"))
-    sym = f.get_section_by_name(".symtab").get_symbol_by_name("s_cfg_hs")
+    symtab = f.get_section_by_name(".symtab")
+    if symtab is None:
+        sys.exit(f"{path} has no .symtab (stripped?)")
+    sym = symtab.get_symbol_by_name("s_cfg_hs")
     if not sym:
         sys.exit("symbol s_cfg_hs not found")
     addr, size = sym[0]["st_value"], sym[0]["st_size"]
@@ -97,10 +100,14 @@ def main():
         d = open(a.bin, "rb").read()
 
     ck = Check()
+    if len(d) < 9:
+        sys.exit("usb_descriptor_check: config descriptor shorter than 9 bytes")
     ck(d[1] == 2, "first descriptor is not a configuration")
     total = struct.unpack_from("<H", d, 2)[0]
     ck(total == len(d) or a.sysfs, f"wTotalLength {total} != {len(d)}")
     d = d[:total]
+    if len(d) < 9:
+        sys.exit("usb_descriptor_check: truncated configuration")
     print(f"configuration: wTotalLength {total}, bNumInterfaces {d[4]}, bmAttributes 0x{d[7]:02x}, "
           f"MaxPower {d[8] * 2} mA")
 
@@ -109,10 +116,16 @@ def main():
     alts = {}
     i = d[0]
     while i < len(d):
+        if i + 2 > len(d):
+            ck(False, f"truncated descriptor header at {i}")
+            break
         ln, ty = d[i], d[i + 1]
         b = d[i:i + ln]
         if ln < 2:
             ck(False, f"zero-length descriptor at {i}")
+            break
+        if i + ln > len(d):
+            ck(False, f"descriptor at {i} (type 0x{ty:02x}) overruns the buffer ({ln} B)")
             break
         if ty == 0x0B:
             seen["iad"] += 1
@@ -163,12 +176,16 @@ def main():
                 seen["fmt"].append((itf, b[4], b[5]))
                 ck(b[4] == 4 and b[5] == 24, "format not 4-byte / 24-bit")
         elif ty == 0x05:
+            if len(b) < 7:
+                ck(False, f"endpoint descriptor at {i} shorter than 7 bytes")
+                break
             addr, attr, mps, ival = b[2], b[3], struct.unpack_from("<H", b, 4)[0], b[6]
             sync = ["none", "async", "adaptive", "sync"][(attr >> 2) & 3]
             usage = ["data", "feedback", "implicit fb", "?"][(attr >> 4) & 3]
+            span = 1 << (ival - 1) if ival else 0
             print(f"  EP 0x{addr:02x} iso={attr & 3 == 1} sync={sync} usage={usage} "
                   f"wMaxPacketSize {mps & 0x7FF}(+{mps >> 11}) bInterval {ival} "
-                  f"(= {1 << (ival - 1)} uframes)")
+                  f"(= {span} uframes)")
             seen["ep"].append((itf, addr, attr, mps, ival))
         elif ty == 0x25:
             print(f"  CS_ENDPOINT attr 0x{b[3]:02x} controls 0x{b[4]:02x} lockdelay {b[5]}/{b[6]}")
@@ -187,7 +204,9 @@ def main():
     ck(0x81 in eps and eps[0x81][2] == 0x11 and eps[0x81][3] == 4,
        "feedback EP 0x81 iso feedback 4 B")
     names = sorted(t[3] for t in seen["it"])
-    ck(len(names) == 2 and names[1] - names[0] == CH, "channel-name string blocks")
+    ck(len(names) == 2 and len(names) == 2 and names[1] - names[0] == CH,
+       "channel-name string blocks" if len(names) == 2 else
+       f"channel-name string blocks ({len(names)} input terminals found)")
     print("OK" if ck.fails == 0 else f"{ck.fails} check(s) FAILED")
     if a.sysfs:
         print("strings: lsusb -v -d %04x:%04x | less   (channel names are the iChannelNames indices)"

@@ -239,11 +239,37 @@ static void send_network_info(void)
     send_info(op, c, bb.len);
 }
 
+// Info-request rate limit: unauthenticated UDP on port 8700, and every
+// answer is a byte-heavy multicast to 224.0.0.231 — a hostile host used to
+// be able to elicit them at line rate. Token bucket: one token per 250 ms,
+// burst 32 (a Dante Controller instance asks at ~4 Hz).
+#define INFO_TOKENS_MAX     32u
+#define INFO_TOKEN_MS      250u
+
+static bool info_take_token(void)
+{
+    static uint32_t tokens = INFO_TOKENS_MAX;
+    static uint32_t last_refill_ms;
+    const uint32_t now = aoip_now_ms();
+    const uint32_t refill = (now - last_refill_ms) / INFO_TOKEN_MS;
+    if (refill) {
+        tokens = tokens > INFO_TOKENS_MAX - refill ? INFO_TOKENS_MAX : tokens + refill;
+        last_refill_ms = now;
+    }
+    if (tokens == 0) {
+        CTR_INC(info_drops);
+        return false;
+    }
+    tokens--;
+    return true;
+}
+
 void info_on_request(const uint8_t *pkt, size_t len)
 {
     if (len < 32) return;
     const uint8_t *o = pkt + 24;
     if (o[0] != 0x07 || o[2] != 0 || o[4] != 0 || o[5] != 0 || o[6] != 0) return;
+    if (!info_take_token()) return;
     switch (o[3]) {
     case MC_REQ_BOARD_INFO:
         if (o[7] == 0) send_board_info();

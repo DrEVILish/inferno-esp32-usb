@@ -253,6 +253,7 @@ void aoip_get_stats(aoip_stats_t *s)
     s->fc_failures = LD(fc_failures);
     s->arc_requests = LD(arc_requests);
     s->nvs_writes = LD(nvs_writes);
+    s->info_drops = LD(info_drops);
 #undef LD
     s->nvs_skipped = settings_skipped_flushes();
     s->rx_margin_min = INT32_MAX;

@@ -11,8 +11,7 @@
 set -e
 rc=0
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-OUT="${TMPDIR:-/tmp}/usb_engine_sim.$$"
-mkdir -p "$OUT"
+OUT="$(mktemp -d "${TMPDIR:-/tmp}/usb_engine_sim.XXXXXX")"
 trap 'rm -rf "$OUT"' EXIT
 CF="-O2 -std=gnu11 -Wall -Wextra -Wno-unused-parameter -DUAC2_HOST_SIM -I$ROOT/firmware/main"
 [ -n "$LEAD" ] && CF="$CF -DUI_SIM_OUT_LEAD=$LEAD"

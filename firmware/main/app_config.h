@@ -51,6 +51,7 @@
 //   UI_FPP_DEFAULT         frames per packet we ask transmitters for / use for
 //                          our multicast bundles; also the largest fpp we
 //                          advertise (UI_TX_FPP_MAX)
+
 //   UI_USB_OUT_LEAD_FRAMES how far ahead of the media clock USB OUT writes the
 //                          TX ring (held by the feedback phase term). Must
 //                          cover USB OUT arrival (one microframe, 6) + ISR
@@ -89,6 +90,11 @@
 #define UI_USB_OUT_LEAD_FRAMES  ((unsigned)UI_SIM_OUT_LEAD)
 #endif
 #define UI_NET_LATENCY_NS       (UI_NET_LATENCY_FRAMES * 125000u / 6u)    // frames * 1e9 / 48000
+// The frames->ns conversion truncates: all latency variants must be a
+// multiple of 6 frames or the advertised latency is off by up to 20.8 us.
+#if (UI_NET_LATENCY_FRAMES % 6u) != 0
+#error "UI_NET_LATENCY_FRAMES must be a multiple of 6 (see UI_NET_LATENCY_NS)"
+#endif
 #define UI_USB_IN_MARGIN_FRAMES 3u
 // Loopback test delay (CONFIG_USBINF_TEST_USB_LOOPBACK)
 #define UI_LOOPBACK_DELAY_FRAMES 192u

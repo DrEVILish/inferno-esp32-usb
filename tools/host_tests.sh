@@ -5,13 +5,15 @@
 # AoIP fork-comparable replies (byte-exact vectors).
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-OUT="${TMPDIR:-/tmp}/host_tests.$$"
-mkdir -p "$OUT"
+OUT="$(mktemp -d "${TMPDIR:-/tmp}/host_tests.XXXXXX")"
 trap 'rm -rf "$OUT"' EXIT
 CF="-O1 -std=gnu11 -Wall -Wextra -Wno-unused-parameter -DUAC2_HOST_SIM -I$ROOT/firmware/main -I$ROOT/tools/host_stub"
 
 echo "== fpp_select_test"
 gcc $CF "$ROOT/tools/fpp_select_test.c" -o "$OUT/fpp" && "$OUT/fpp"
+
+echo "== checksum_test"
+gcc -O1 -Wall -Wextra "$ROOT/tools/checksum_test.c" -o "$OUT/cksum" && "$OUT/cksum"
 
 echo "== perf_host_test"
 gcc $CF "$ROOT/tools/perf_host_test.c" "$ROOT/firmware/main/sys/perf.c" -o "$OUT/perf" && "$OUT/perf"

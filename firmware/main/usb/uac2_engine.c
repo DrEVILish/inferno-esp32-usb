@@ -409,8 +409,12 @@ void ENG_IRAM eng_out_packet(uac2_engine_t *e, uint64_t now, uint64_t arm_uf,
             } else if (measured >= ENG_OUT_GAP_DETECT) {
                 fill = measured;
             }
-            int64_t cap = (int64_t)(gap - 1u) * UAC2_MAX_FPU;
-            if (fill > cap) fill = cap;
+            // A loss estimate beyond the lead window is a discontinuity, not
+            // a gap (host suspend/resume, several lost completions): skip the
+            // fill and let the re-anchor below reset positions. Unbounded
+            // gap*fb fills would jump the ring head far past now and throw
+            // every TX consumer out of ring_valid (docs/13 §6).
+            if (fill > (int64_t)ENG_OUT_LEAD_MAX) fill = 0;
         } else if (measured > (int64_t)UAC2_NOMINAL_FPU - ENG_OUT_GAP_DETECT + 1 &&
                    measured <= 2 * (int64_t)UAC2_MAX_FPU) {
             fill = measured;
@@ -453,7 +457,12 @@ void ENG_IRAM eng_out_packet(uac2_engine_t *e, uint64_t now, uint64_t arm_uf,
 // IN (host capture) <- g_ring_net_to_usb
 // ---------------------------------------------------------------------------
 
-uint32_t ENG_IRAM eng_in_packet(uac2_engine_t *e, void *dst)
+// Split of eng_in_packet: stage renders [r, r+n) without consuming, so the
+// caller can arm the endpoint first and COMMIT (advance + clear + counters)
+// only when the transfer was actually accepted — a failed usbd_edpt_xfer
+// must not silently drop the frames; the next call re-renders the same
+// range (docs/13 §6: was consume-then-maybe-fail).
+uint32_t ENG_IRAM eng_stage_in_packet(uac2_engine_t *e, void *dst)
 {
     e->in_streaming = true;
 
@@ -462,7 +471,9 @@ uint32_t ENG_IRAM eng_in_packet(uac2_engine_t *e, void *dst)
     uint64_t target = in_target(e);
     int64_t d = (int64_t)(target - e->r);
     if (d < 0 || d > ENG_IN_RESYNC) {
-        reanchor_in(e, target - UAC2_NOMINAL_FPU);
+        // before the first frames exist the target can be < the nominal
+        // packet: clamp so the re-anchor start does not underflow
+        reanchor_in(e, target > UAC2_NOMINAL_FPU ? target - UAC2_NOMINAL_FPU : 0);
         e->st.in_underruns++;
         atomic_fetch_add_explicit(&g_ring_net_to_usb.underruns, 1u, memory_order_relaxed);
         d = UAC2_NOMINAL_FPU;
@@ -480,13 +491,30 @@ uint32_t ENG_IRAM eng_in_packet(uac2_engine_t *e, void *dst)
 #elif defined(CONFIG_USBINF_TEST_NET_LOOPBACK)
         memset(dst, 0, n * FRAME_BYTES);
 #else
-        ring_read_frames_and_clear(&g_ring_net_to_usb, e->r, (int32_t *)dst, n);
+        ring_read_frames(&g_ring_net_to_usb, e->r, (int32_t *)dst, n);
 #endif
     }
+    return n * FRAME_BYTES;
+}
+
+void ENG_IRAM eng_commit_in_packet(uac2_engine_t *e, uint32_t bytes)
+{
+    const uint32_t n = bytes / FRAME_BYTES;
+    if (!n) return;
+#if !defined(CONFIG_USBINF_TEST_USB_LOOPBACK) && !defined(CONFIG_USBINF_TEST_NET_LOOPBACK)
+    ring_clear_frames(&g_ring_net_to_usb, e->r, n);
+#endif
     e->r += n;
     e->st.in_packets++;
     e->st.in_frames += n;
-    return n * FRAME_BYTES;
+}
+
+// Stage + commit in one go (host simulation, tools/usb_engine_sim.c).
+uint32_t ENG_IRAM eng_in_packet(uac2_engine_t *e, void *dst)
+{
+    const uint32_t bytes = eng_stage_in_packet(e, dst);
+    eng_commit_in_packet(e, bytes);
+    return bytes;
 }
 
 // ---------------------------------------------------------------------------

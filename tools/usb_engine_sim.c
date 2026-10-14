@@ -33,6 +33,16 @@ void ring_init(void)
     g_ring_net_to_usb.buf = calloc(RING_FRAMES, FB);
     g_ring_usb_to_net.buf = calloc(RING_FRAMES, FB);
 }
+void ring_read_frames(audio_ring_t *r, uint64_t f, int32_t *dst, size_t n)
+{
+    for (size_t i = 0; i < n; i++, dst += UI_CHANNELS) memcpy(dst, ring_frame(r, f + i), FB);
+}
+
+void ring_clear_frames(audio_ring_t *r, uint64_t f, size_t n)
+{
+    for (size_t i = 0; i < n; i++) memset(ring_frame(r, f + i), 0, FB);
+}
+
 void ring_read_frames_and_clear(audio_ring_t *r, uint64_t f, int32_t *dst, size_t n)
 {
     for (size_t i = 0; i < n; i++, f++, dst += UI_CHANNELS) {

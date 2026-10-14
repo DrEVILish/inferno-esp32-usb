@@ -459,8 +459,22 @@ static uint16_t op_set_device_name(const uint8_t *c, size_t clen)
 {
     char name[AOIP_NAME_LEN] = { 0 };
     if (clen > 0) rd_str0(c, clen, 0, name, sizeof name);
+    // The fork rules (protocol/a67a337): 1-31 chars, [A-Za-z0-9-], starts
+    // with a letter, no trailing '-', and the content must be NUL-terminated
+    // (a longer-than-31 name that truncated silently is not a rename).
+    if (clen && memchr(c, 0, clen) == NULL) {
+        ESP_LOGW(TAG, "rename device: name is not NUL-terminated (len %u)", (unsigned)clen);
+        return RR_CODE_TODO_ERROR;
+    }
     if (!name[0]) {
         strcpy(name, g_aoip.default_hostname);
+    } else {
+        const size_t n = strlen(name);
+        const bool first_ok = (name[0] >= 'a' && name[0] <= 'z') || (name[0] >= 'A' && name[0] <= 'Z');
+        if (n > AOIP_NAME_LEN - 2u || !first_ok || name[n - 1] == '-') {
+            ESP_LOGW(TAG, "rename device: invalid name '%s'", name);
+            return RR_CODE_TODO_ERROR;
+        }
     }
     for (const char *p = name; *p; p++) {
         if (!valid_name_char(*p)) {

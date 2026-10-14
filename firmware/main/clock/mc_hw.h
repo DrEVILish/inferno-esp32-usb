@@ -14,9 +14,13 @@ void mc_hw_init(void);
 bool mc_hw_ready(void);
 
 // Add delta_ns to the counter (absolute re-initialisation, done in a critical
-// section) and bump the epoch.
-void mc_hw_step(int64_t delta_ns);
+// section) and bump the epoch. Returns false when the EMAC did not accept the
+// write (its self-clearing control bits never went idle): the clock did NOT
+// move, and neither the seq nor the epoch did — the caller keeps its servo
+// state and the next Sync re-detects the offset.
+bool mc_hw_step(int64_t delta_ns);
 
-// Absolute frequency correction relative to the nominal addend
-// (positive = counter runs faster).
-void mc_hw_set_freq_ppb(double ppb);
+// Absolute frequency correction relative to the nominal addend (positive =
+// counter runs faster). False = the addend was NOT written; the previous
+// correction stays loaded (mc_freq_ppb still reports the real one).
+bool mc_hw_set_freq_ppb(double ppb);

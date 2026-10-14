@@ -7,8 +7,7 @@
 #   DUMP=1 tools/aoip_host_test.sh     print reply hex (for check_vectors.py)
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-OUT="${TMPDIR:-/tmp}/aoip_host_test.$$"
-mkdir -p "$OUT"
+OUT="$(mktemp -d "${TMPDIR:-/tmp}/aoip_host_test.XXXXXX")"
 trap 'rm -rf "$OUT"' EXIT
 gcc -O1 -std=gnu11 -Wall -Wextra -Wno-unused-parameter -DUAC2_HOST_SIM \
     -I"$ROOT/firmware/main" -I"$ROOT/tools/host_stub" \

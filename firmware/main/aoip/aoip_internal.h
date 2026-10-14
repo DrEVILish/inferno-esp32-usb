@@ -59,6 +59,7 @@ typedef struct {
     _Atomic uint32_t fc_requests, fc_failures;
     _Atomic uint32_t arc_requests;
     _Atomic uint32_t nvs_writes;
+    _Atomic uint32_t info_drops;    // info requests refused by the rate limit
 } aoip_counters_t;
 extern aoip_counters_t g_aoip_ctr;
 #define CTR_INC(f) atomic_fetch_add_explicit(&g_aoip_ctr.f, 1u, memory_order_relaxed)

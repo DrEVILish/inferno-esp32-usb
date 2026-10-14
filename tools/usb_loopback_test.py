@@ -91,6 +91,13 @@ def run_alsa(device, play_bytes, seconds):
         if not shutil.which(tool):
             raise RuntimeError(f"{tool} not found (install alsa-utils)")
     tmp = tempfile.mkdtemp(prefix="usbinf_")
+    try:
+        return capture_audio(device, play_bytes, seconds, tmp)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def capture_audio(device, play_bytes, seconds, tmp):
     pfile, cfile = os.path.join(tmp, "play.raw"), os.path.join(tmp, "cap.raw")
     with open(pfile, "wb") as f:
         f.write(play_bytes)
@@ -105,9 +112,7 @@ def run_alsa(device, play_bytes, seconds):
         raise RuntimeError("aplay: " + play.stderr.decode(errors="replace").strip())
     if rec.returncode:
         raise RuntimeError("arecord: " + rerr.decode(errors="replace").strip())
-    data = open(cfile, "rb").read()
-    shutil.rmtree(tmp, ignore_errors=True)
-    return data
+    return open(cfile, "rb").read()
 
 
 def run_sounddevice(device, play, seconds):
@@ -192,6 +197,12 @@ def analyse(play, cap_bytes, frames):
         nbad = bad24 = 0
         first = None
         for j0, j1, off in segs:
+            if j0 - off < 0:
+                # a segment whose playback offset precedes the capture start
+                # cannot be compared (Python negative-slice would wrap to the
+                # array tail and produce garbage "mismatches")
+                print(f"  segment {j0}..{j1} offset {off}: not comparable (starts before capture)")
+                continue
             got = cap[j0 * CH + c: j1 * CH + c: CH]
             want = play[(j0 - off) * CH + c: (j1 - off) * CH + c: CH]
             if np is not None:

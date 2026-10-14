@@ -6,12 +6,18 @@
 # Latency profiles / channel counts: tools/build-matrix.sh.
 set -e
 V="${1:?variant: USB_LOOPBACK | NET_LOOPBACK | TONE}"
+# V goes into a generated Kconfig file and a directory name: anything but
+# the three valid variants is refused (injection protection)
+case "$V" in
+    USB_LOOPBACK|NET_LOOPBACK|TONE) ;;
+    *) echo "bad variant: $V (USB_LOOPBACK | NET_LOOPBACK | TONE)" >&2; exit 2 ;;
+esac
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . /opt/usb-inferno/tools/idf-env.sh
 cd "$ROOT/firmware"
 mkdir -p "build-$V"
 echo "CONFIG_USBINF_TEST_$V=y" > "build-$V/variant.defaults"
-flock /tmp/usb-inferno-build.lock nice -n 10 taskset -c 12,13 \
+flock "${TMPDIR:-/tmp}/usb-inferno-build.lock.$(id -u)" nice -n 10 taskset -c 12,13 \
     idf.py -B "build-$V" -DSDKCONFIG="build-$V/sdkconfig" \
     -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;build-$V/variant.defaults" build
 if ! python3 "$ROOT/tools/check_iram.py" "build-$V/usb_inferno.elf"; then

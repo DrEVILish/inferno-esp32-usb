@@ -36,6 +36,9 @@ void aoip_factory_ch_name(char out[4], unsigned index)
     snprintf(out, 4, "%02u", index + 1u);
 }
 
+static uint32_t s_now_ms = 1234u;       // controllable for the rate-limit test
+uint32_t aoip_now_ms(void) { return ++s_now_ms; }
+
 void sub_get_info(unsigned local_ch, sub_info_t *out)
 {
     (void)local_ch;

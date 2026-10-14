@@ -73,6 +73,12 @@ def watch(host, seconds, interval, csv_path):
             d = snapshot(host)
         except KeyboardInterrupt:
             break
+        except (OSError, socket.gaierror) as e:
+            # transient DNS/socket issues (host renamed, brief network flap):
+            # keep watching instead of dying mid-measurement
+            print(f"{time.monotonic() - t0:7.1f}  ({type(e).__name__}: {e})")
+            time.sleep(interval)
+            continue
         t = time.monotonic() - t0
         if d is None:
             misses += 1
@@ -136,7 +142,12 @@ def main():
     o = ap.parse_args()
 
     if o.cmd == "watch":
-        secs = float(o.args[0]) if o.args else 0.0
+        try:
+            secs = float(o.args[0]) if o.args else 0.0
+        except ValueError:
+            sys.exit(f"watch: duration must be seconds, got {o.args[0]!r}")
+        if o.interval <= 0:
+            sys.exit("--interval must be > 0")
         return watch(o.host, secs, o.interval, o.csv)
     d = snapshot(o.host)
     if d is None:

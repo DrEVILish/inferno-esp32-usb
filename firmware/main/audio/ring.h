@@ -63,6 +63,12 @@ static inline int32_t *ring_frame(audio_ring_t *r, uint64_t frame)
 
 // ---- whole-frame access (USB side) ----------------------------------------
 
+// Copy n frames starting at `frame` without consuming (stage before arm).
+void ring_read_frames(audio_ring_t *r, uint64_t frame, int32_t *dst, size_t n);
+
+// Zero n frames without publishing anything (commit of ring_read_frames).
+void ring_clear_frames(audio_ring_t *r, uint64_t frame, size_t n);
+
 // Copy n frames starting at `frame` out of the ring (wrap handled), then
 // zero the source (net_to_usb semantics).
 void ring_read_frames_and_clear(audio_ring_t *r, uint64_t frame, int32_t *dst, size_t n);

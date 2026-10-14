@@ -9,7 +9,7 @@ set -e
 TREE="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 . /opt/usb-inferno/tools/idf-env.sh
 cd "$TREE/firmware"
-flock /tmp/usb-inferno-build.lock nice -n 10 taskset -c 12,13 \
+flock "${TMPDIR:-/tmp}/usb-inferno-build.lock.$(id -u)" nice -n 10 taskset -c 12,13 \
     idf.py build "${@:2}"
 if ! python3 "$TREE/tools/check_iram.py" build/usb_inferno.elf; then
     echo "*** BUILD CHECK FAILED: flash-resident code/data on the USB ISR path (see above) ***" >&2

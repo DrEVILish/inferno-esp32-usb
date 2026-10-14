@@ -46,6 +46,7 @@ typedef struct {
     uint32_t in_resyncs;            // IN read position re-anchors (incl. boot/epoch)
     uint32_t xfer_errors;           // failed iso transfers (OUT + IN + feedback)
     uint32_t arm_failures;          // usbd_edpt_xfer refused (bus reset races)
+    uint32_t ep_errors;             // iso alloc/activate refusals
     int32_t  fb_phase_ppb;          // current phase term in the feedback
     // latency windows since the previous uac2_get_stats() call (frames;
     // INT32_MAX/INT32_MIN = no sample): see docs/14-latency.md

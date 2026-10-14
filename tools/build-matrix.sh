@@ -38,7 +38,7 @@ for N in $NAMES; do
         true
     } > "$B/matrix.defaults"
     echo "=== $N"
-    if flock /tmp/usb-inferno-build.lock nice -n 10 taskset -c 12,13 \
+    if flock "${TMPDIR:-/tmp}/usb-inferno-build.lock.$(id -u)" nice -n 10 taskset -c 12,13 \
             idf.py -B "$B" -DSDKCONFIG="$B/sdkconfig" \
             -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;$B/matrix.defaults" build > "$B/build.log" 2>&1 &&
        python3 "$ROOT/tools/check_iram.py" "$B/usb_inferno.elf" >> "$B/build.log" 2>&1; then

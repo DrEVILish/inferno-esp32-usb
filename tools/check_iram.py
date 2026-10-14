@@ -112,9 +112,14 @@ def find_objdump(arg):
 
 
 def sections(objdump, elf):
-    out = subprocess.run([objdump, "-h", elf], check=True, capture_output=True, text=True).stdout
+    try:
+        res = subprocess.run([objdump, "-h", elf], check=True, capture_output=True, text=True)
+    except FileNotFoundError:
+        sys.exit(f"check_iram: objdump '{objdump}' not runnable (exit 2 = tool error)")
+    except subprocess.CalledProcessError as e:
+        sys.exit(f"check_iram: '{objdump} -h {elf}' failed: {e.stderr.strip()[:200]}")
     secs = []
-    for line in out.splitlines():
+    for line in res.stdout.splitlines():
         f = line.split()
         if len(f) >= 7 and f[0].isdigit():
             name, size, vma = f[1], int(f[2], 16), int(f[3], 16)
@@ -216,7 +221,7 @@ def main():
         if len(cand) != 1:
             print(f"check_iram: root '{r}' matches {len(cand)} functions "
                   f"({', '.join(label(c) for c in cand) or 'none: renamed or inlined?'})", file=sys.stderr)
-            return 1
+            return 2     # tool-config error, NOT a firmware IRAM violation
         roots.append(cand[0])
 
     def edges(fa):

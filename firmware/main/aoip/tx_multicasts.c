@@ -64,6 +64,14 @@ static void refresh_channels(const bundle_t *b)
 static bool add_internal(unsigned index, const int8_t *ch, unsigned n, uint32_t preferred_ip)
 {
     if (index >= SLOTS || s_b[index].used || n == 0 || n > UI_TX_MAX_CH_PER_FLOW) return false;
+    // Clamp at the choke point: ARC and the NVS load validate their channel
+    // ids, but this function is also the entry for any future caller, and an
+    // out-of-range id would index aoip_mdns_refresh_tx_channel() / the flow
+    // table out of bounds downstream.
+    int8_t clamped[UI_TX_MAX_CH_PER_FLOW];
+    for (unsigned j = 0; j < n; j++) {
+        clamped[j] = (ch[j] >= 0 && ch[j] < (int8_t)UI_CHANNELS) ? ch[j] : -1;
+    }
     ftx_info_t fi;
     memset(&fi, 0, sizeof fi);
     if (preferred_ip) {
@@ -74,7 +82,7 @@ static bool add_internal(unsigned index, const int8_t *ch, unsigned n, uint32_t 
     }
     fi.nch = (uint8_t)n;
     memset(fi.ch, -1, sizeof fi.ch);
-    memcpy(fi.ch, ch, n);
+    memcpy(fi.ch, clamped, n);
     fi.fpp = TX_FPP_MAX_ADVERTISED;     // "TODO" in Inferno
     fi.bps = UI_NET_BITS / 8u;
     unsigned got;
@@ -88,7 +96,7 @@ static bool add_internal(unsigned index, const int8_t *ch, unsigned n, uint32_t 
     b->used = true;
     b->nch = (uint8_t)n;
     memset(b->ch, -1, sizeof b->ch);
-    memcpy(b->ch, ch, n);
+    memcpy(b->ch, clamped, n);
     b->dst_ip = fi.dst_ip;
     b->dst_port = fi.dst_port;
     b->t_added_ms = aoip_now_ms();
@@ -108,11 +116,19 @@ esp_err_t txm_remove_flow(unsigned flow_index)
         ESP_LOGW(TAG, "removing nonexisting multicast flow %u", flow_index + 1);
         return ESP_ERR_NOT_FOUND;
     }
+    // Remove the TX flow FIRST: only when that succeeded may the bundle
+    // state (and the persisted copy) forget it. The old order cleared the
+    // state up front, so a failed removal left the device streaming a
+    // multicast that the persisted + mDNS state no longer knew about.
+    const esp_err_t err = ftx_remove_multicast_flow(flow_index);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "removing bundle %u keeps its record (flow removal failed)", flow_index + 1);
+        return err;
+    }
     bundle_t b = s_b[flow_index];
     s_b[flow_index].used = false;
     s_b[flow_index].active = false;
     if (b.active) aoip_mdns_remove_bundle(flow_index + 1);
-    esp_err_t err = ftx_remove_multicast_flow(flow_index);
     refresh_channels(&b);
     save_state();
     return err;

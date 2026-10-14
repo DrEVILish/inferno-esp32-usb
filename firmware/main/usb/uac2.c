@@ -71,6 +71,7 @@ static uint8_t s_in_buf[2][DMA_BUF_BYTES] __attribute__((aligned(BUF_ALIGN)));
 static uint32_t s_fb_buf[BUF_ALIGN / sizeof(uint32_t)] __attribute__((aligned(BUF_ALIGN)));
 
 static const tusb_desc_endpoint_t *s_ep_out, *s_ep_fb, *s_ep_in;
+
 static volatile uint8_t s_alt_out, s_alt_in;
 static bool s_out_armed, s_fb_armed, s_in_armed;
 static uint32_t s_out_arm_at, s_in_arm_at;  // engine sof_count from which arming is allowed
@@ -79,6 +80,12 @@ static uint64_t s_out_arm_uf[2];            // engine microframe each OUT buffer
 static bool s_configured;
 
 static uint32_t s_out_xfer_err, s_in_xfer_err, s_fb_xfer_err, s_arm_fail;
+static uint32_t s_ep_errors;               // iso alloc/activate refusals (docs/13 §6)
+static uint8_t s_out_arm_era;              // era each OUT buffer was armed in
+// Session generation: bumped on every SET_INTERFACE. A completion latched
+// from before the change must not be consumed as the new session's first
+// packet (stale s_out_arm_uf pairing after an aborted transfer).
+static uint8_t s_out_era;
 // IN read age window (reset by uac2_get_stats): real media time when an IN
 // packet is built minus the newest frame it carries, in frames. The device's
 // network->USB residence for that sample (UI_NET_LATENCY + IN margin + up to
@@ -93,6 +100,7 @@ static usb_phy_handle_t s_phy;
 static void IRAM_ATTR arm_out(void)
 {
     s_out_arm_uf[s_out_idx] = eng_uf(&s_eng);
+    s_out_arm_era = s_out_era;
     s_out_armed = usbd_edpt_xfer(RHPORT, UAC2_EP_OUT, s_out_buf[s_out_idx], UAC2_EP_DATA_MPS, true);
     if (!s_out_armed) s_arm_fail++;
 }
@@ -107,14 +115,23 @@ static void IRAM_ATTR arm_fb(void)
 static void IRAM_ATTR arm_in(void)
 {
     s_in_idx ^= 1u;
-    uint32_t len = eng_in_packet(&s_eng, s_in_buf[s_in_idx]);
-    if (len) {
-        const int32_t age = (int32_t)(int64_t)(mc_ns_to_frames(mc_now_ns()) - (s_eng.r - 1u));
-        if (age < s_in_age_min) s_in_age_min = age;
-        if (age > s_in_age_max) s_in_age_max = age;
-    }
+    // Stage -> arm -> commit: the ring is consumed only when the
+    // transfer was accepted. A persistent arm failure therefore re-renders
+    // the same frames instead of discarding fresh audio every microframe
+    // (visible only as frozen in_frames + arm_failures before; telemetry
+    // now shows in_frames stop).
+    uint32_t len = eng_stage_in_packet(&s_eng, s_in_buf[s_in_idx]);
     s_in_armed = usbd_edpt_xfer(RHPORT, UAC2_EP_IN, s_in_buf[s_in_idx], (uint16_t)len, true);
-    if (!s_in_armed) s_arm_fail++;
+    if (s_in_armed) {
+        eng_commit_in_packet(&s_eng, len);
+        if (len) {
+            const int32_t age = (int32_t)(int64_t)(mc_ns_to_frames(mc_now_ns()) - (s_eng.r - 1u));
+            if (age < s_in_age_min) s_in_age_min = age;
+            if (age > s_in_age_max) s_in_age_max = age;
+        }
+    } else {
+        s_arm_fail++;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -144,6 +161,7 @@ static void IRAM_ATTR uac2_sof_isr(uint8_t rhport, uint32_t frame_count)
 static bool IRAM_ATTR uac2_xfer_isr(uint8_t rhport, uint8_t ep_addr, xfer_result_t result, uint32_t len)
 {
     (void)rhport;
+    bool op_known = true;       // one of our three EPs
     perf_begin(PERF_USB_XFER);
     portENTER_CRITICAL_ISR(&s_lock);
     switch (ep_addr) {
@@ -154,6 +172,12 @@ static bool IRAM_ATTR uac2_xfer_isr(uint8_t rhport, uint8_t ep_addr, xfer_result
             const uint64_t arm_uf = s_out_arm_uf[di];
             s_out_idx ^= 1u;
             s_out_armed = false;
+            // A completion latched before the last SET_INTERFACE (aborted
+            // transfer) arrives with data from the previous session: swallow
+            // it, the SOF arming will re-arm buffer di (docs/13 §6).
+            if (s_out_arm_era != s_out_era) {
+                break;
+            }
             if (s_alt_out) arm_out();           // next microframe first, then copy
             if (result == XFER_RESULT_SUCCESS) {
                 eng_out_packet(&s_eng, mc_ns_to_frames(mc_now_ns()), arm_uf, done, len);
@@ -179,11 +203,12 @@ static bool IRAM_ATTR uac2_xfer_isr(uint8_t rhport, uint8_t ep_addr, xfer_result
         }
         break;
     default:
+        op_known = false;       // not an endpoint of this driver
         break;
     }
     portEXIT_CRITICAL_ISR(&s_lock);
     perf_end(PERF_USB_XFER);
-    return true;                                // never defer to the task
+    return op_known;                // unknown EP: not handled here
 }
 
 static bool uac2_xfer_cb(uint8_t rhport, uint8_t ep_addr, xfer_result_t result, uint32_t len)
@@ -237,7 +262,12 @@ static uint16_t uac2_open(uint8_t rhport, const tusb_desc_interface_t *itf, uint
             // minimum TX FIFO depth (TinyUSB would allocate just 1 word).
             uint16_t fifo = tu_edpt_packet_size(ep);
             if (fifo < 64) fifo = 64;
-            TU_ASSERT(usbd_edpt_iso_alloc(rhport, ep->bEndpointAddress, fifo), 0);
+            if (usbd_edpt_iso_alloc(rhport, ep->bEndpointAddress, fifo) == false) {
+                // TU_ASSERT would fail enumeration silently; make it visible
+                ESP_LOGE(TAG, "iso alloc failed for EP 0x%02x", ep->bEndpointAddress);
+                s_ep_errors++;
+                return 0;
+            }
         }
         p += p[0];
     }
@@ -284,6 +314,8 @@ static bool set_interface(uint8_t rhport, uint8_t itf, uint8_t alt)
         eng_in_alt(&s_eng, ok && alt == 1);
         s_alt_in = (ok && alt == 1) ? 1 : 0;
     }
+    if (!ok) s_ep_errors++;
+    s_out_era++;
     portEXIT_CRITICAL(&s_lock);
     return ok;
 }
@@ -297,6 +329,7 @@ static bool clock_request(uint8_t rhport, uint8_t stage, const tusb_control_requ
     if (get) {
         if (stage != CONTROL_STAGE_SETUP) return true;
         if (cs == UAC2_CS_SAM_FREQ && req->bRequest == UAC2_REQ_CUR) {
+            if (req->wLength < 4) return false;     // spec: do not send over-length DATA
             const uint32_t f = UI_SAMPLE_RATE;
             memcpy(buf, &f, 4);
             return tud_control_xfer(rhport, req, buf, 4);
@@ -305,11 +338,13 @@ static bool clock_request(uint8_t rhport, uint8_t stage, const tusb_control_requ
             // wNumSubRanges = 1, { dMIN, dMAX, dRES } = { 48000, 48000, 0 }
             const uint16_t nsub = 1;
             const uint32_t r[3] = { UI_SAMPLE_RATE, UI_SAMPLE_RATE, 0 };
+            if (req->wLength < (uint16_t)(2 + sizeof r)) return false;
             memcpy(buf, &nsub, 2);
             memcpy(buf + 2, r, sizeof r);
             return tud_control_xfer(rhport, req, buf, 2 + sizeof r);
         }
         if (cs == UAC2_CS_CLOCK_VALID && req->bRequest == UAC2_REQ_CUR) {
+            if (req->wLength < 1) return false;
             buf[0] = 1;
             return tud_control_xfer(rhport, req, buf, 1);
         }
@@ -444,12 +479,16 @@ esp_err_t uac2_start(void)
                                 UI_PRIO_USB, NULL, UI_CORE_USB) != pdPASS) {
         return ESP_ERR_NO_MEM;
     }
+    // Mark as started once the task exists: the usb task owns TinyUSB from
+    // here, so a notification-wait failure below must not allow a second
+    // uac2_start() call to spawn another task / re-run tusb_rhport_init
+    // (docs/13 §6: was a leak-and-double-init bug).
+    started = true;
     uint32_t v = 0;
     if (xTaskNotifyWait(0, UINT32_MAX, &v, pdMS_TO_TICKS(5000)) != pdTRUE || v != 1u) {
-        ESP_LOGE(TAG, "TinyUSB init failed");
+        ESP_LOGE(TAG, "TinyUSB init failed (usb task keeps running; no retry)");
         return ESP_FAIL;
     }
-    started = true;
     if (!s_usb_intr_iram) {
         // The wrap did not apply (link flags lost?): USB still works, but
         // every flash write stalls it. tools/check_iram.py cannot see this.
@@ -471,7 +510,7 @@ void uac2_get_stats(uac2_stats_t *s)
     int32_t lead, ppb;
     bool out_active, in_streaming;
     uint8_t alt_out, alt_in, cfg;
-    uint32_t oerr, ierr, ferr, afail;
+    uint32_t oerr, ierr, ferr, afail, epfail;
 
     portENTER_CRITICAL(&s_lock);
     st = s_eng.st;
@@ -487,6 +526,7 @@ void uac2_get_stats(uac2_stats_t *s)
     ierr = s_in_xfer_err;
     ferr = s_fb_xfer_err;
     afail = s_arm_fail;
+    epfail = s_ep_errors;
     const int32_t age_min = s_in_age_min, age_max = s_in_age_max;
     s_in_age_min = INT32_MAX;
     s_in_age_max = INT32_MIN;
@@ -519,6 +559,7 @@ void uac2_get_stats(uac2_stats_t *s)
     s->in_resyncs = st.in_resyncs;
     s->xfer_errors = oerr + ierr + ferr;
     s->arm_failures = afail;
+    s->ep_errors = epfail;
     s->fb_phase_ppb = ppb;
     s->out_hr_min = st.out_hr_min;
     s->out_hr_max = st.out_hr_max;

@@ -61,6 +61,7 @@ typedef struct {
     uint32_t no_hw_rx_ts, no_hw_tx_ts, queue_drops;
     uint32_t steps, lock_losses, outliers, phase_shifts, leader_changes;
     uint32_t delay_samples, delay_rejected;
+    uint32_t hw_step_fails, hw_freq_fails;  // EMAC TSINIT/addend writes refused
     int32_t  path_delay_ns;     // filtered leader-to-us delay (0 until known)
     uint8_t  stage;             // 0 no leader/idle, 1 frequency estimate, 2 tracking
 } mc_stats_t;

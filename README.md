@@ -11,6 +11,14 @@ Target SoC: **ESP32-P4** — the only ESP32 with High-Speed USB (32×32 needs it
 
 > Status: firmware for milestones M1–M5 is written but **not yet run on hardware** (2026-10-13). Next steps are bench order, own board, and open questions in `docs/30-roadmap.md`. Not affiliated with or endorsed by any AoIP protocol vendor.
 
+**Threat model:** this is a dissector of an unauthenticated Dante-class
+protocol on a LAN. The control plane (ARC/CMC/flow-control, ports 4440/8800/4455)
+and info multicast accept any host: basic sanity (destination checks,
+rate limits, name validation) is enforced, and abuse is counted in telemetry
+(`aoip_info_drops`, `ptp_hw_*`, …), but there is no authentication — as with
+Dante/Inferno itself. Assign it a port on a managed switch, not a flat,
+hostile network.
+
 Dev board: **Waveshare ESP32-P4-ETH** (RJ45/IP101; HS USB OTG on its 4-pin header → USB-C pigtail).
 
 ## Repo layout

@@ -73,6 +73,15 @@ static size_t request_flow(const uint8_t *req, size_t len, uint8_t *out)
     }
     fi.dst_port = rd16(req + descr_off + 2);
     memcpy(&fi.dst_ip, req + descr_off + 4, 4);
+    // The request carries the receiver's media address: sanity-check it or a
+    // hostile datagram can point the device's TX stream anywhere (reflection
+    // through the gateway included). Multicast destinations are legal AoIP.
+    const uint8_t *dst_b = (const uint8_t *)&fi.dst_ip;
+    if (fi.dst_ip == 0u || fi.dst_ip == 0xFFFFFFFFu || dst_b[0] == 127u || fi.dst_port == 0) {
+        ESP_LOGW(TAG, "flow request: refusing destination " IPSTR ":%u",
+                 IP2STR((esp_ip4_addr_t *)&fi.dst_ip), fi.dst_port);
+        return reply(out, req, FC_ERR_0302, NULL, 0);
+    }
 
     ESP_LOGI(TAG, "%s requests flow %s: %u ch, %lu Hz, %lu bit, fpp %u -> " IPSTR ":%u",
              fi.rx_hostname, fi.rx_flow_name, nch, (unsigned long)rate, (unsigned long)bits, fpp,
@@ -112,7 +121,11 @@ static size_t request_flow(const uint8_t *req, size_t len, uint8_t *out)
     uint8_t handle[FC_HANDLE_LEN];
     esp_err_t err = ftx_add_flow(&fi, -1, false, &index, handle);
     if (err != ESP_OK) {
-        return reply(out, req, FC_ERR_TOO_MANY_TX_FLOWS, NULL, 0);
+        // Distinguish "table full" (the receiver may retry later) from other
+        // failures: they were all misreported as 0x0315 before.
+        return reply(out, req,
+                     err == ESP_ERR_NO_MEM ? FC_ERR_TOO_MANY_TX_FLOWS : FC_ERR_0302,
+                     NULL, 0);
     }
     return reply(out, req, RR_CODE_OK, handle, sizeof handle);
 }

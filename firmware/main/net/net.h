@@ -66,13 +66,29 @@ static inline unsigned net_group_bit(uint32_t group_ip)
 
 // Raw UDP destination: resolved once (ARP via lwIP, or multicast MAC), then
 // used for many sends. src_port is ours.
+#define NET_RAW_HDR_LEN             42u     // Ethernet + IPv4 + UDP
+
 typedef struct {
     uint8_t  dst_mac[6];
     uint32_t dst_ip;            // network byte order
     uint16_t dst_port, src_port;
     uint8_t  dscp;              // 46 (EF) for audio, 56 (CS7) for PTP events
     bool     resolved;
+    // Send template (docs/15 §4): the 42-byte header built for a zero-length
+    // payload, with the variable words patched per packet. chk_base is the
+    // checksum-relevant word sum without total-length, IP-ID and UDP-length;
+    // the IP checksum is linear in those, so per packet it is
+    // ~fold(chk_base + 28 + len + 8 + len + id).
+    uint8_t  hdr[NET_RAW_HDR_LEN];
+    uint32_t chk_base;
+    bool     sealed;
 } net_udp_dest_t;
+
+// Rebuild a resolved destination's send template (source address included).
+// Call after an address change / periodically with the dest you own;
+// net_udp_send_raw() uses the template and patches only the variable words.
+// Returns true if the template was rebuilt (e.g. the source address moved).
+bool net_udp_dest_seal(net_udp_dest_t *d);
 
 // Resolve dst MAC (non-blocking; returns ESP_ERR_NOT_FINISHED while ARP is
 // pending — call again later). Runs a short call in the lwIP thread, so it

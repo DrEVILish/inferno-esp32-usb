@@ -38,6 +38,7 @@ typedef struct {
     uint32_t rx_ka_sent, rx_ka_fail;        // RX flow keepalives (13 37)
     uint32_t fc_requests, fc_failures;      // flow-control requests we sent
     uint32_t arc_requests;
+    uint32_t info_drops;        // info requests refused by the rate limit
     uint32_t nvs_writes;            // NVS commits that changed flash
     uint32_t nvs_skipped;           // quiet periods with nothing new to write
     // latency windows since the previous aoip_get_stats() (frames;

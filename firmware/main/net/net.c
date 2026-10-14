@@ -431,6 +431,7 @@ esp_err_t net_udp_dest_resolve(net_udp_dest_t *d)
     }
     memcpy(d->dst_mac, rq.mac, 6);
     d->resolved = true;
+    net_udp_dest_seal(d);
     return ESP_OK;
 }
 
@@ -458,7 +459,7 @@ static void build_headers(uint8_t *h, const net_udp_dest_t *d, size_t len)
         sum += rd16(ip + i);
     }
     sum = (sum & 0xFFFFu) + (sum >> 16);
-    sum = (sum & 0xFFFFu) + (sum >> 16);
+    sum = (sum & 0xffff) + (sum >> 16);
     wr16(ip + 10, (uint16_t)~sum);
     // UDP (checksum 0 = none, legal for IPv4)
     uint8_t *udp = ip + IP_HDR_LEN;
@@ -468,6 +469,53 @@ static void build_headers(uint8_t *h, const net_udp_dest_t *d, size_t len)
     udp[6] = 0; udp[7] = 0;
 }
 
+// Bake the constant part of the wire header for this destination. The three
+// variable words (IP total length, IP ID, UDP length) are ZEROED in the
+// template and in the base sum: the send path adds exactly those (and folds),
+// so the wire checksum is ~fold2(chk_base + total + udp_len + id) — identical
+// to recomputing the whole fold per packet.
+bool net_udp_dest_seal(net_udp_dest_t *d)
+{
+    if (!d->resolved) return false;
+    uint32_t old_src;
+    memcpy(&old_src, d->hdr + ETH_HDR_LEN + 12, 4);
+    bool changed = !d->sealed || old_src != net_ipv4();
+    build_headers(d->hdr, d, 0);
+    wr16(d->hdr + ETH_HDR_LEN + 2, 0);              // IP total length
+    wr16(d->hdr + ETH_HDR_LEN + 4, 0);              // IP ID
+    wr16(d->hdr + ETH_HDR_LEN + IP_HDR_LEN + 4, 0); // UDP length
+    uint32_t sum = 0;
+    for (unsigned i = 0; i < NET_RAW_HDR_LEN; i += 2) {
+        if (i == ETH_HDR_LEN + 10) continue;        // the checksum word itself
+        sum += rd16(d->hdr + i);
+    }
+    d->chk_base = sum;
+    d->sealed = true;
+    return changed;
+}
+
+// Head from the template, or a live build when it is not sealed yet. The
+// template was built for a zero-length payload: patch total length, IP ID,
+// UDP length and the checksum (linear fold over the constant base).
+static void send_head(const net_udp_dest_t *d, size_t len, uint8_t hdr[RAW_HDR_LEN])
+{
+    if (!d->sealed) {
+        build_headers(hdr, d, len);
+        return;
+    }
+    memcpy(hdr, d->hdr, RAW_HDR_LEN);
+    const uint16_t id = (uint16_t)atomic_fetch_add_explicit(&s_ip_id, 1, memory_order_relaxed);
+    const uint16_t total = (uint16_t)(IP_HDR_LEN + UDP_HDR_LEN + len);
+    const uint16_t udp_len = (uint16_t)(UDP_HDR_LEN + len);
+    wr16(hdr + ETH_HDR_LEN + 2, total);
+    wr16(hdr + ETH_HDR_LEN + 4, id);
+    wr16(hdr + ETH_HDR_LEN + IP_HDR_LEN + 4, udp_len);
+    uint32_t raw = d->chk_base + (uint32_t)total + (uint32_t)udp_len + (uint32_t)id;
+    raw = (raw & 0xFFFFu) + (raw >> 16);
+    raw = (raw & 0xFFFFu) + (raw >> 16);
+    wr16(hdr + ETH_HDR_LEN + 10, (uint16_t)~raw);
+}
+
 esp_err_t net_udp_send_raw(const net_udp_dest_t *d, const void *payload, size_t len)
 {
     if (!d || !d->resolved || len > RAW_MAX_PAYLOAD || (len && !payload) || !s_eth) {
@@ -475,7 +523,7 @@ esp_err_t net_udp_send_raw(const net_udp_dest_t *d, const void *payload, size_t 
         return ESP_ERR_INVALID_ARG;
     }
     uint8_t hdr[RAW_HDR_LEN];
-    build_headers(hdr, d, len);
+    send_head(d, len, hdr);
     esp_err_t err;
     if (len) {
         err = esp_eth_transmit_ctrl_vargs(s_eth, NULL, 4, hdr, (uint32_t)RAW_HDR_LEN,
@@ -490,12 +538,13 @@ esp_err_t net_udp_send_raw(const net_udp_dest_t *d, const void *payload, size_t 
 esp_err_t net_udp_send_raw_ts(const net_udp_dest_t *d, const void *payload, size_t len, uint64_t *tx_ts_ns)
 {
     *tx_ts_ns = 0;
+    net_udp_dest_seal((net_udp_dest_t *)d);     // keep the source address current
     if (!d || !d->resolved || len == 0 || len > RAW_MAX_PAYLOAD || !payload || !s_eth) {
         atomic_fetch_add_explicit(&s_tx_raw_fail, 1, memory_order_relaxed);
         return ESP_ERR_INVALID_ARG;
     }
     uint8_t hdr[RAW_HDR_LEN];
-    build_headers(hdr, d, len);
+    send_head(d, len, hdr);
 
     // Let the TX DMA drain (bounded) so our frame is next on the wire and the
     // driver's bounded wait for the timestamp write-back is long enough.

@@ -622,6 +622,12 @@ void ftx_tick(void)
                 }
             }
         }
+        // A source-address change (DHCP renew, lease expiry) must reach the
+        // packetizer through a publish: the template in the published copy
+        // still carries the old source otherwise.
+        if (s_dest[i].resolved && net_udp_dest_seal(&s_dest[i])) {
+            changed = true;
+        }
     }
     if (changed) publish();
 }

@@ -177,7 +177,11 @@ static void track_locked(servo_t *s, int64_t off, double dt, servo_act_t *act)
             }
             if (s->outl_n >= SERVO_HOLD_MAX) {
                 // Scattered for too long: start over from the raw offsets.
+                // Reset the outlier window too: the median below must not
+                // mix samples from before the re-anchor (the other unlock
+                // path at do_step resets it).
                 unlock(s);
+                s->outl_n = 0;
                 s->off_ref = off;
             }
         }

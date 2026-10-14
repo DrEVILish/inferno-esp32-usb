@@ -111,6 +111,7 @@ static QueueHandle_t s_q;
 static servo_t       s_servo;
 static uint8_t       s_uuid[6];
 static net_udp_dest_t s_dst_event;
+static volatile bool s_hooks_ok;                // both RX hooks registered
 
 static cand_t        s_cand[MAX_CANDIDATES];
 static int           s_leader = -1;             // index into s_cand
@@ -313,14 +314,26 @@ static void apply(const servo_act_t *a)
 {
     bool was_locked = s_locked;
     if (a->step_ns) {
-        mc_hw_step(a->step_ns);
-        forget_inflight();          // timestamps taken before the step are void
-        if (log_ok()) {
-            ESP_LOGI(TAG, "step %lld ns (epoch %lu)", (long long)a->step_ns, (unsigned long)mc_epoch());
+        if (mc_hw_step(a->step_ns)) {
+            forget_inflight();          // timestamps taken before the step are void
+            if (log_ok()) {
+                ESP_LOGI(TAG, "step %lld ns (epoch %lu)", (long long)a->step_ns, (unsigned long)mc_epoch());
+            }
+        } else {
+            // The EMAC refused the TSINIT: the clock did not move, so the
+            // in-flight timestamps are still on the current timescale and the
+            // pending offset stands. The next Sync re-measures it and steps
+            // again (counters: ptp_hw_step_fails).
+            ESP_LOGW(TAG, "1588 step not accepted (%lld ns still pending)",
+                     (long long)a->step_ns);
         }
     }
     if (a->set_freq) {
-        mc_hw_set_freq_ppb(a->freq_ppb);
+        if (!mc_hw_set_freq_ppb(a->freq_ppb)) {
+            // The addend was not written; the previous correction is still
+            // loaded and mc_freq_ppb reports it. The next servo run retries.
+            ESP_LOGW(TAG, "1588 addend update not accepted (%.1f ppb pending)", a->freq_ppb);
+        }
     }
     publish();
     if (s_locked != was_locked && log_ok()) {
@@ -487,6 +500,21 @@ static void periodic(uint32_t t)
 static void ptp_task(void *arg)
 {
     (void)arg;
+    // The hooks were registered in ptpv1_start() before this task existed.
+    // A failure there leaves the follower dead in the water (no events ever
+    // arrive), so retry with backoff before treating it as permanent
+    // (docs/13 §6: was log-and-continue).
+    for (int i = 0; !s_hooks_ok && i < 6; i++) {
+        vTaskDelay(pdMS_TO_TICKS(5000));
+        if (net_udp_hook_register(PTP_EVENT_PORT, PTP_EVENT_PORT, ptp_hook, NULL) == ESP_OK &&
+                net_udp_hook_register(PTP_GENERAL_PORT, PTP_GENERAL_PORT, ptp_hook, NULL) == ESP_OK) {
+            s_hooks_ok = true;
+            ESP_LOGI(TAG, "PTP hooks registered on retry %d", i + 1);
+        }
+    }
+    if (!s_hooks_ok) {
+        ESP_LOGE(TAG, "PTP hook registration failed permanently");   // mc_locked stays false
+    }
     for (;;) {
         ptp_evt_t ev;
         if (xQueueReceive(s_q, &ev, pdMS_TO_TICKS(20)) == pdTRUE) {
@@ -526,12 +554,17 @@ void ptpv1_start(void)
         ESP_LOGE(TAG, "no memory for the PTP task");
         return;
     }
-    if (net_udp_hook_register(PTP_EVENT_PORT, PTP_EVENT_PORT, ptp_hook, NULL) != ESP_OK ||
-            net_udp_hook_register(PTP_GENERAL_PORT, PTP_GENERAL_PORT, ptp_hook, NULL) != ESP_OK) {
+    if (net_udp_hook_register(PTP_EVENT_PORT, PTP_EVENT_PORT, ptp_hook, NULL) == ESP_OK &&
+            net_udp_hook_register(PTP_GENERAL_PORT, PTP_GENERAL_PORT, ptp_hook, NULL) == ESP_OK) {
+        s_hooks_ok = true;
+    } else {
+        // retried by ptp_task before its main loop
         ESP_LOGE(TAG, "hook registration failed");
     }
     uint32_t g;
     memcpy(&g, k_group, 4);
+    // failure tolerated: net_maint re-joins every registered group each
+    // second while the link is up
     net_mcast_join(g);
     if (!mc_hw_ready()) {
         ESP_LOGW(TAG, "no 1588 hardware clock: PTP will not lock");

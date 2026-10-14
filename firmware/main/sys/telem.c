@@ -116,6 +116,8 @@ static size_t snapshot(char *buf, size_t cap)
         KV("ptp_leader_changes=%lu", (unsigned long)ms.leader_changes);
         KV("ptp_delay_samples=%lu", (unsigned long)ms.delay_samples);
         KV("ptp_delay_rejected=%lu", (unsigned long)ms.delay_rejected);
+        KV("ptp_hw_step_fails=%lu", (unsigned long)ms.hw_step_fails);
+        KV("ptp_hw_freq_fails=%lu", (unsigned long)ms.hw_freq_fails);
     }
     // net
     KV("net_link=%d", net_link_up());
@@ -153,6 +155,7 @@ static size_t snapshot(char *buf, size_t cap)
     KV("usb_in_resyncs=%lu", (unsigned long)us.in_resyncs);
     KV("usb_xfer_errors=%lu", (unsigned long)us.xfer_errors);
     KV("usb_arm_failures=%lu", (unsigned long)us.arm_failures);
+    KV("usb_ep_errors=%lu", (unsigned long)us.ep_errors);
     KV("usb_fb_phase_ppb=%ld", (long)us.fb_phase_ppb);
     KV("usb_configured=%u", us.configured);
     KV("usb_high_speed=%u", us.high_speed);
@@ -184,6 +187,7 @@ static size_t snapshot(char *buf, size_t cap)
     KV("aoip_arc_requests=%lu", (unsigned long)as.arc_requests);
     KV("aoip_nvs_writes=%lu", (unsigned long)as.nvs_writes);
     KV("aoip_nvs_skipped=%lu", (unsigned long)as.nvs_skipped);
+    KV("aoip_info_drops=%lu", (unsigned long)as.info_drops);
     KV_WIN("lat_rx_margin_min", as.rx_margin_min, INT32_MAX);
     for (unsigned i = 0; i < UI_RX_MAX_FLOWS; i++) {
         if (as.rx_slot_margin_min[i] != INT32_MAX) {

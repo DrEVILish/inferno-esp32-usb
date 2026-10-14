@@ -29,6 +29,7 @@ static _Atomic uint32_t s_epoch;
 static _Atomic uint32_t s_step_seq;     // odd while mc_hw_step() is changing the counter
 static uint32_t         s_addend_nominal;
 static bool             s_started;
+static uint32_t         s_hw_step_fails, s_hw_freq_fails;   // telemetry (docs/13 §6)
 static portMUX_TYPE     s_hw_lock = portMUX_INITIALIZER_UNLOCKED;
 
 // Before the 1588 counter runs (or without Ethernet), time comes from
@@ -97,41 +98,52 @@ void mc_hw_init(void)
 
 bool mc_hw_ready(void) { return s_hw; }
 
-void mc_hw_step(int64_t delta_ns)
+bool mc_hw_step(int64_t delta_ns)
 {
     if (!s_hw) {
-        return;
+        return false;
     }
+    bool ok;
     portENTER_CRITICAL(&s_hw_lock);
     // seq odd: mc_now_ns_epoch() readers on the other core wait; the epoch
-    // changes together with the timescale, never after it.
+    // changes together with the timescale, never after it. On failure the
+    // epoch must NOT move: the caller's servo state assumes the step applied
+    // (docs/13 §6: was an unchecked-error bug).
     atomic_fetch_add_explicit(&s_step_seq, 1, memory_order_acq_rel);
     int64_t t = (int64_t)hw_read_ns() + delta_ns;
     if (t < (int64_t)NS_PER_S) {
         t = (int64_t)NS_PER_S;          // keep timestamps non-zero
     }
-    hw_set_time((uint64_t)t);
-    atomic_fetch_add_explicit(&s_epoch, 1, memory_order_release);
-    atomic_fetch_add_explicit(&s_step_seq, 1, memory_order_release);
+    ok = hw_set_time((uint64_t)t);
+    if (ok) {
+        atomic_fetch_add_explicit(&s_epoch, 1, memory_order_release);
+    }
+    atomic_fetch_add_explicit(&s_step_seq, 1, memory_order_release);   // even again
     portEXIT_CRITICAL(&s_hw_lock);
+    if (!ok) s_hw_step_fails++;
+    return ok;
 }
 
-void mc_hw_set_freq_ppb(double ppb)
+bool mc_hw_set_freq_ppb(double ppb)
 {
     if (!s_hw) {
-        return;
+        return false;
     }
     double a = (double)s_addend_nominal * (1.0 + ppb * 1e-9);
     if (a < 1.0) a = 1.0;
     if (a > 4294967295.0) a = 4294967295.0;
     uint32_t addend = (uint32_t)(a + 0.5);
+    bool ok;
     portENTER_CRITICAL(&s_hw_lock);
-    if (wait_ctrl_idle()) {
+    ok = wait_ctrl_idle();
+    if (ok) {
         EMAC_PTP.timestamp_addend.val = addend;
         EMAC_PTP.timestamp_ctrl.addend_reg_update = 1;
         s_freq_ppb = (int32_t)(ppb >= 0 ? ppb + 0.5 : ppb - 0.5);
     }
     portEXIT_CRITICAL(&s_hw_lock);
+    if (!ok) s_hw_freq_fails++;
+    return ok;
 }
 
 // ---------------------------------------------------------------------------
@@ -184,4 +196,9 @@ uint32_t IRAM_ATTR mc_epoch(void) { return atomic_load_explicit(&s_epoch, memory
 int32_t mc_freq_ppb(void) { return s_freq_ppb; }
 int32_t mc_offset_ns(void) { return ptpv1_offset_ns(); }
 void mc_leader_id(uint8_t id[8]) { ptpv1_leader_id(id); }
-void mc_get_stats(mc_stats_t *s) { ptpv1_get_stats(s); }
+void mc_get_stats(mc_stats_t *s)
+{
+    ptpv1_get_stats(s);
+    s->hw_step_fails = s_hw_step_fails;
+    s->hw_freq_fails = s_hw_freq_fails;
+}
