@@ -54,6 +54,16 @@ esp_err_t net_udp_hook_unregister(uint16_t port_lo, uint16_t port_hi);
 esp_err_t net_mcast_join(uint32_t group_ip);
 esp_err_t net_mcast_leave(uint32_t group_ip);
 
+// 239/8 group -> 23-bit index (the last three octets; the second octet's top
+// bit is always set inside 239/8 and stripped). Bijective over 239/8: the RX
+// fast path's membership bitmap uses it as an exact hash. Only meaningful
+// for 239/8 addresses — other scopes must not use it (collisions).
+static inline unsigned net_group_bit(uint32_t group_ip)
+{
+    const uint8_t *b = (const uint8_t *)&group_ip;      // network byte order
+    return ((unsigned)(b[1] & 0x7Fu) << 16) | ((unsigned)b[2] << 8) | b[3];
+}
+
 // Raw UDP destination: resolved once (ARP via lwIP, or multicast MAC), then
 // used for many sends. src_port is ours.
 typedef struct {
@@ -79,5 +89,6 @@ typedef struct {
     uint32_t rx_frames, rx_hooked, rx_to_lwip, rx_dropped;
     uint32_t tx_raw, tx_raw_fail;
     uint32_t rx_mcast_filtered;     // 239/8 multicast for groups nobody joined
+    uint32_t rx_dma_free_desc;      // free RX descriptors (DMA ring pressure)
 } net_stats_t;
 void net_get_stats(net_stats_t *s);

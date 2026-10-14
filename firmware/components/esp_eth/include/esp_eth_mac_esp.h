@@ -501,6 +501,20 @@ esp_err_t esp_eth_mac_set_pps_out_freq(esp_eth_mac_t *mac, uint32_t freq_hz);
  *      - PTP timestamp resolution in nanoseconds
  */
 uint32_t esp_eth_mac_get_ts_resolution(esp_eth_mac_t *mac);
+
+/**
+ * @brief Number of free RX descriptors (usb-inferno addition, docs/15).
+ *
+ * Local to this component copy: telemetry observes DMA-ring pressure under
+ * burst packet rates. The value is refreshed by the RX task as it drains
+ * the ring; a read from another task may lag by one frame.
+ *
+ * @param mac: Ethernet MAC instance
+ *
+ * @return
+ *      - free RX descriptors (0 while the ring is full: frames are held)
+ */
+uint32_t esp_eth_mac_esp_free_rx_desc(esp_eth_mac_t *mac);
 #endif // SOC_EMAC_IEEE1588V2_SUPPORTED
 
 #endif // CONFIG_ETH_USE_ESP32_EMAC

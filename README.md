@@ -48,6 +48,7 @@ Design details: single 1588 time base slaved to the PTPv1 leader; media clock de
 | `docs/12-aoip.md` | AoIP module: ports, flows, subscriptions, NVS persistence |
 | `docs/13-review-2026-10-13.md` | Cross-module review fixes (IRAM, NVS, rings, latency profiles) |
 | `docs/14-latency.md` | Latency budget and profiles (10/6/4/2 ms) |
+| `docs/15-profile.md` | Performance instrumentation, hot-path probes, gated optimization backlog |
 | `docs/20-bench-testing.md` | Bench setup and test sequence (M1–M8) |
 | `docs/21-latency-matrix.md` | Round-trip test matrix: 10/6/4/2 ms × 32/16/8/4/2 ch, modes A/B/C |
 | `docs/30-roadmap.md` | Roadmap: no-HW phase, bench order, own board, release |
@@ -83,6 +84,7 @@ Firmware written ≠ firmware proven. Start at `docs/20-bench-testing.md`: Waves
 | `tools/aoip_probe.py`, `tools/aoip_pcap.py` | M3–M5: discovery/control probing, packet capture analysis |
 | `tools/usb_engine_sim.sh`, `tools/ptp_servo_sim.c` | host-side simulations (feedback engine, servo) |
 | `tools/latency_matrix.py` | latency model behind `docs/14` and `docs/21` |
+| `tools/host_tests.sh` | run every host test (fpp select, perf windows, ts split, group bitmap, fork-comparable ARC/info replies) |
 
 ## Attribution and license
 

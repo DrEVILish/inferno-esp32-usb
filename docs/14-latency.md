@@ -186,5 +186,7 @@ previous request and print `none` without samples.
 | `lat_tx_send_lag_max` | packetizer: send time − (ts + fpp) | ≪ L − fpp (a few frames) |
 | `aoip_rx_late`, `aoip_tx_underruns`, `ring_*` | deadline misses | 0 |
 | `cpu0_idle_pct`, `cpu1_idle_pct` | idle share since the previous request | > 20 % |
+| `t_<probe>_p50/_p99/_max`, `t_<probe>_n` | per-path cycle histograms (docs/15-profile.md) | see docs/15 §5 decision rules |
+| `net_rx_dma_free` | free RX descriptors (DMA pressure) | > 0 during bursts; 0 sustained = ring-bound |
 
 Bench procedure: docs/20-bench-testing.md, "Latency".

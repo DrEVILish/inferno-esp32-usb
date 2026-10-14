@@ -35,6 +35,7 @@
 #include "lwip/inet.h"
 
 #include "app_config.h"
+#include "aoip/ts_incr.h"
 #include "audio/ring.h"
 #include "clock/mediaclock.h"
 #include "net/net.h"
@@ -178,16 +179,17 @@ static inline int32_t sat_add(int32_t a, int32_t b)
 
 static uint8_t s_pkt[1536] __attribute__((aligned(4)));
 
-static void build_and_send(const pub_flow_t *f, uint64_t ts)
+static void build_and_send(const pub_flow_t *f, uint64_t ts, const ts_split_t *split)
 {
+    perf_begin(PERF_TX_BUILD);
     uint8_t *p = s_pkt;
     const unsigned fpp = f->fpp, nch = f->nch, bps = f->bps;
     const unsigned stride = nch * bps;
     const size_t len = MEDIA_HEADER_LEN + (size_t)fpp * stride;
 
     p[0] = MEDIA_BYTE0;
-    wr32(p + 1, (uint32_t)(ts / UI_SAMPLE_RATE));
-    wr32(p + 5, (uint32_t)(ts % UI_SAMPLE_RATE));
+    wr32(p + 1, split->sec);
+    wr32(p + 5, split->sub);
     uint8_t *o = p + MEDIA_HEADER_LEN;
 
 #if CONFIG_USBINF_TEST_TONE
@@ -260,11 +262,15 @@ static void build_and_send(const pub_flow_t *f, uint64_t ts)
     }
 #endif
 
-    if (net_udp_send_raw(&f->dest, p, len) == ESP_OK) {
+    perf_begin(PERF_TX_SEND);
+    esp_err_t snd = net_udp_send_raw(&f->dest, p, len);
+    perf_end(PERF_TX_SEND);
+    if (snd == ESP_OK) {
         CTR_INC(tx_packets);
     } else {
         CTR_INC(tx_send_fail);
     }
+    perf_end(PERF_TX_BUILD);
 }
 
 static void IRAM_ATTR timer_cb(void *arg)
@@ -278,12 +284,15 @@ typedef struct {
     uint32_t instance;
     bool     boot;
     uint64_t next_ts;
+    ts_split_t split;       // (sec, sub) of next_ts, kept incrementally
 } rt_flow_t;
 
 static inline void bootstrap(rt_flow_t *rt, uint64_t now, unsigned fpp)
 {
     // flows_tx.rs bootstrap_next_ts: next multiple of fpp after now
     rt->next_ts = now + fpp - now % fpp;
+    // the divisions happen here only, once per (re)anchor
+    ts_split_load(&rt->split, rt->next_ts);
 }
 
 static void packetizer_task(void *arg)
@@ -338,8 +347,9 @@ static void packetizer_task(void *arg)
                 atomic_store_explicit(&s_lag_max, (int32_t)lag, memory_order_relaxed);
             }
             while (lag >= 0) {
-                build_and_send(f, r->next_ts);
+                build_and_send(f, r->next_ts, &r->split);
                 r->next_ts += (uint64_t)fpp;
+                ts_split_advance(&r->split, f->fpp);
                 lag -= fpp;
             }
             if (-lag < wake) wake = -lag;

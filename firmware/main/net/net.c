@@ -33,6 +33,7 @@
 #include "soc/emac_ptp_struct.h"
 
 #include "app_config.h"
+#include "sys/perf.h"
 
 static const char *TAG = "net";
 
@@ -81,6 +82,10 @@ static portMUX_TYPE     s_reg_lock = portMUX_INITIALIZER_UNLOCKED;
 
 static hook_slot_t      s_hooks[MAX_HOOKS];
 static _Atomic uint32_t s_groups[MAX_GROUPS];   // wanted multicast groups (net order), 0 = free
+// 239/8 membership as a bitmap (exact: the 23-bit index encodes the group's
+// last three octets bijectively). Kept next to s_groups; only 239/8 groups
+// are mapped here — the RX fast path consults it for 239/8 frames only.
+static _Atomic uint32_t s_group_bm[8];
 static _Atomic uint32_t s_ip_id;
 
 // RX counters have a single writer (the EMAC RX task); TX counters are bumped
@@ -108,12 +113,11 @@ static inline bool ip_is_admin_scoped(uint32_t ip_net)
 
 static bool group_wanted(uint32_t g)
 {
-    for (int i = 0; i < MAX_GROUPS; i++) {
-        if (atomic_load_explicit(&s_groups[i], memory_order_relaxed) == g) {
-            return true;
-        }
-    }
-    return false;
+    // 239/8 only: the bitmap maps the group's 23 low bits exactly (net.h
+    // net_group_bit). One relaxed load replaces a 32-slot scan in the RX
+    // path under a multicast flood.
+    const unsigned bit = net_group_bit(g);
+    return (atomic_load_explicit(&s_group_bm[bit >> 5], memory_order_relaxed) >> (bit & 31u)) & 1u;
 }
 
 static struct netif *lwip_nif(void)
@@ -124,7 +128,7 @@ static struct netif *lwip_nif(void)
 // ---------------------------------------------------------------------------
 // Receive fast path (runs in IDF's emac_rx task, pinned to core 0)
 // ---------------------------------------------------------------------------
-static esp_err_t rx_input(esp_eth_handle_t eth, uint8_t *buf, uint32_t len, void *priv, void *info)
+static esp_err_t rx_input_body(esp_eth_handle_t eth, uint8_t *buf, uint32_t len, void *priv, void *info)
 {
     (void)eth;
     s_rx_frames++;
@@ -188,6 +192,16 @@ static esp_err_t rx_input(esp_eth_handle_t eth, uint8_t *buf, uint32_t len, void
     if (err != ESP_OK) {
         s_rx_dropped++;
     }
+    return err;
+}
+
+// Probe wrapper (docs/15): the whole fast path per frame, lwIP handoff
+// included — it is the EMAC RX task's per-frame cost.
+static esp_err_t rx_input(esp_eth_handle_t eth, uint8_t *buf, uint32_t len, void *priv, void *info)
+{
+    perf_begin(PERF_RX_INPUT);
+    esp_err_t err = rx_input_body(eth, buf, len, priv, info);
+    perf_end(PERF_RX_INPUT);
     return err;
 }
 
@@ -312,6 +326,10 @@ esp_err_t net_mcast_join(uint32_t group_ip)
     if (!have && free_slot >= 0) {
         atomic_store_explicit(&s_groups[free_slot], group_ip, memory_order_release);
         have = true;
+        if (ip_is_admin_scoped(group_ip)) {
+            const unsigned bit = net_group_bit(group_ip);
+            atomic_fetch_or_explicit(&s_group_bm[bit >> 5], 1u << (bit & 31u), memory_order_relaxed);
+        }
     }
     portEXIT_CRITICAL(&s_reg_lock);
     ESP_RETURN_ON_FALSE(have, ESP_ERR_NO_MEM, TAG, "group table full");
@@ -336,9 +354,15 @@ esp_err_t net_mcast_leave(uint32_t group_ip)
         }
     }
     portEXIT_CRITICAL(&s_reg_lock);
-    if (found && s_netif) {
-        mcast_req_t rq = { .group = group_ip, .join = false };
-        esp_netif_tcpip_exec(tcpip_mcast, &rq);
+    if (found) {
+        if (ip_is_admin_scoped(group_ip)) {
+            const unsigned bit = net_group_bit(group_ip);
+            atomic_fetch_and_explicit(&s_group_bm[bit >> 5], ~(1u << (bit & 31u)), memory_order_relaxed);
+        }
+        if (s_netif) {
+            mcast_req_t rq = { .group = group_ip, .join = false };
+            esp_netif_tcpip_exec(tcpip_mcast, &rq);
+        }
     }
     return found ? ESP_OK : ESP_ERR_NOT_FOUND;
 }
@@ -525,6 +549,10 @@ void net_get_stats(net_stats_t *s)
     s->tx_raw = atomic_load_explicit(&s_tx_raw, memory_order_relaxed);
     s->tx_raw_fail = atomic_load_explicit(&s_tx_raw_fail, memory_order_relaxed);
     s->rx_mcast_filtered = s_rx_mcast_filtered;
+    // Free RX descriptors: DMA-ring pressure at burst rates. The value is
+    // updated by the EMAC RX task between frames; a relaxed read from the
+    // telemetry task is good enough.
+    s->rx_dma_free_desc = s_mac ? esp_eth_mac_esp_free_rx_desc(s_mac) : 0;
 }
 
 // ---------------------------------------------------------------------------

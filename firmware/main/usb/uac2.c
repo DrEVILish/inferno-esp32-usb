@@ -37,6 +37,7 @@
 #include "device/usbd_pvt.h"
 
 #include "app_config.h"
+#include "sys/perf.h"
 #include "clock/mediaclock.h"
 #include "usb/uac2_defs.h"
 #include "usb/uac2_desc.h"
@@ -122,6 +123,7 @@ static void IRAM_ATTR arm_in(void)
 static void IRAM_ATTR uac2_sof_isr(uint8_t rhport, uint32_t frame_count)
 {
     (void)rhport;
+    perf_begin(PERF_USB_SOF);
     uint32_t epoch;
     const uint64_t t = mc_now_ns_epoch(&epoch); // latch first: closest to the SOF
 
@@ -136,11 +138,13 @@ static void IRAM_ATTR uac2_sof_isr(uint8_t rhport, uint32_t frame_count)
         arm_in();
     }
     portEXIT_CRITICAL_ISR(&s_lock);
+    perf_end(PERF_USB_SOF);
 }
 
 static bool IRAM_ATTR uac2_xfer_isr(uint8_t rhport, uint8_t ep_addr, xfer_result_t result, uint32_t len)
 {
     (void)rhport;
+    perf_begin(PERF_USB_XFER);
     portENTER_CRITICAL_ISR(&s_lock);
     switch (ep_addr) {
     case UAC2_EP_OUT:
@@ -178,6 +182,7 @@ static bool IRAM_ATTR uac2_xfer_isr(uint8_t rhport, uint8_t ep_addr, xfer_result
         break;
     }
     portEXIT_CRITICAL_ISR(&s_lock);
+    perf_end(PERF_USB_XFER);
     return true;                                // never defer to the task
 }
 

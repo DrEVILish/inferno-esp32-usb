@@ -597,6 +597,12 @@ err:
     return ret;
 }
 
+uint32_t esp_eth_mac_esp_free_rx_desc(esp_eth_mac_t *mac)
+{
+    emac_esp32_t *emac = __containerof(mac, emac_esp32_t, parent);
+    return emac->free_rx_descriptor;
+}
+
 static void emac_esp32_rx_task(void *arg)
 {
     emac_esp32_t *emac = (emac_esp32_t *)arg;

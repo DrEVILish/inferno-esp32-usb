@@ -30,6 +30,7 @@
 #include "lwip/sockets.h"
 
 #include "app_config.h"
+#include "sys/perf.h"
 #include "audio/ring.h"
 #include "clock/mediaclock.h"
 #include "net/net.h"
@@ -89,7 +90,7 @@ uint16_t frx_port(unsigned slot) { return (uint16_t)(AOIP_RX_PORT_BASE + slot); 
 // ---------------------------------------------------------------------------
 static inline uint32_t abs32(int32_t s) { return s < 0 ? (uint32_t)(-(int64_t)s) : (uint32_t)s; }
 
-static bool rx_hook(const uint8_t *pl, size_t len, const net_udp_meta_t *meta, void *ctx)
+static bool rx_hook_body(const uint8_t *pl, size_t len, const net_udp_meta_t *meta, void *ctx)
 {
     unsigned slot;
     if (meta->dst_port == AOIP_PORT_MEDIA_MCAST) {
@@ -201,6 +202,15 @@ static bool rx_hook(const uint8_t *pl, size_t len, const net_udp_meta_t *meta, v
         if (pk[k] > s_peak[d]) s_peak[d] = pk[k];
     }
     return true;
+}
+
+// Probe wrapper (docs/15): duration of the audio decode per packet, EMAC RX task.
+static bool rx_hook(const uint8_t *pl, size_t len, const net_udp_meta_t *meta, void *ctx)
+{
+    perf_begin(PERF_RX_HOOK);
+    bool consumed = rx_hook_body(pl, len, meta, ctx);
+    perf_end(PERF_RX_HOOK);
+    return consumed;
 }
 
 // ---------------------------------------------------------------------------

@@ -18,6 +18,7 @@
 #include "net/net.h"
 #include "usb/uac2.h"
 #include "aoip/aoip.h"
+#include "sys/perf.h"
 
 static const char *TAG = "telem";
 
@@ -194,6 +195,18 @@ static size_t snapshot(char *buf, size_t cap)
     KV("ring_n2u_underruns=%lu", (unsigned long)atomic_load(&g_ring_net_to_usb.underruns));
     KV("ring_n2u_late=%lu", (unsigned long)atomic_load(&g_ring_net_to_usb.late));
     KV("ring_u2n_underruns=%lu", (unsigned long)atomic_load(&g_ring_usb_to_net.underruns));
+    // perf probes (docs/15): windowed cycle histograms since the previous request
+    KV("net_rx_dma_free=%u", ns.rx_dma_free_desc);
+    for (unsigned pi = 0; pi < PERF_N; pi++) {
+        perf_window_t w;
+        perf_report((perf_probe_t)pi, &w);
+        if (!w.n) continue;
+        KV("t_%s_n=%lu", perf_name((perf_probe_t)pi), (unsigned long)w.n);
+        KV("t_%s_p50=%lu", perf_name((perf_probe_t)pi), (unsigned long)w.p50);
+        KV("t_%s_p99=%lu", perf_name((perf_probe_t)pi), (unsigned long)w.p99);
+        KV("t_%s_max=%lu", perf_name((perf_probe_t)pi), (unsigned long)w.max);
+        KV("t_%s_ovf=%lu", perf_name((perf_probe_t)pi), (unsigned long)w.overflow);
+    }
     return (size_t)(p - buf);
 }
 
