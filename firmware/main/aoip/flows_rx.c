@@ -248,27 +248,37 @@ esp_err_t frx_add_flow(unsigned slot, uint32_t mcast_ip, unsigned bps, unsigned 
     if (slot >= SLOTS || nch == 0 || nch > AOIP_RX_MAX_CH_PER_FLOW || bps < 2 || bps > 4) {
         return ESP_ERR_INVALID_ARG;
     }
+    // Phase 1 (locked, brief): deactivate and detach the old resources.
+    // (Socket setup and the 2 ms quiesce below touch no shared state and
+    // run unlocked; the hook bails on inactive slots, so no new hook call
+    // can observe the half-rebuilt state.)
+    bool was_active;
+    int old_sock;
     aoip_lock();
     rx_slot_t *s = &s_slot[slot];
-    if (atomic_load(&s->active)) {
-        atomic_store_explicit(&s->active, 0, memory_order_release);
-        quiesce();
-    }
-    if (s_ka_sock[slot] >= 0) {
-        close(s_ka_sock[slot]);
-        s_ka_sock[slot] = -1;
-    }
+    was_active = atomic_load(&s->active);
+    if (was_active) atomic_store_explicit(&s->active, 0, memory_order_release);
+    old_sock = s_ka_sock[slot];
+    s_ka_sock[slot] = -1;
     s_send_ka[slot] = false;
+    memset(&s_ctl[slot], 0, sizeof s_ctl[slot]);
+    aoip_unlock();
+
+    if (was_active) quiesce();
+    if (old_sock >= 0) close(old_sock);
+
+    int new_sock = -1;
     if (send_keepalives) {
-        s_ka_sock[slot] = open_ka_socket(frx_port(slot));
-        if (s_ka_sock[slot] < 0) {
+        new_sock = open_ka_socket(frx_port(slot));
+        if (new_sock < 0) {
             ESP_LOGE(TAG, "keepalive socket for port %u failed", frx_port(slot));
-            aoip_unlock();
             return ESP_FAIL;
         }
-        s_send_ka[slot] = true;
     }
 
+    // Locked install (brief): the new state. No blocking calls.
+    aoip_lock();
+    s = &s_slot[slot];
     int32_t shift = (int32_t)latency_frames - (int32_t)UI_NET_LATENCY_FRAMES;
     if (shift < 0) shift = 0;
     if (shift > RX_MAX_SHIFT) shift = RX_MAX_SHIFT;
@@ -285,6 +295,10 @@ esp_err_t frx_add_flow(unsigned slot, uint32_t mcast_ip, unsigned bps, unsigned 
     atomic_store(&s->max_lat, 0);
     atomic_store(&s->min_margin, INT32_MAX);
     s->have_ts = false;
+    if (new_sock >= 0) {
+        s_ka_sock[slot] = new_sock;
+        s_send_ka[slot] = true;
+    }
 
     frx_info_t *c = &s_ctl[slot];
     memset(c, 0, sizeof *c);
@@ -292,33 +306,45 @@ esp_err_t frx_add_flow(unsigned slot, uint32_t mcast_ip, unsigned bps, unsigned 
     c->rx_port = mcast_ip ? AOIP_PORT_MEDIA_MCAST : frx_port(slot);
     c->nch = (uint8_t)nch;
     c->latency_frames = latency_frames;
-    if (mcast_ip) net_mcast_join(mcast_ip);
     atomic_store_explicit(&s->active, 1, memory_order_release);
     aoip_unlock();
+
+    // IGMP join round-trips through the tcpip thread: after the slot is
+    // live, so it never extends the lock hold.
+    if (mcast_ip) net_mcast_join(mcast_ip);
     return ESP_OK;
 }
 
 void frx_remove_flow(unsigned slot)
 {
     if (slot >= SLOTS) return;
+    // Phase 1 (locked, brief): deactivate and detach.
+    bool was_active;
+    int old_sock;
+    uint32_t group;
+    bool still_used;
     aoip_lock();
     rx_slot_t *s = &s_slot[slot];
-    atomic_store_explicit(&s->active, 0, memory_order_release);
-    quiesce();
-    if (s_ka_sock[slot] >= 0) {
-        close(s_ka_sock[slot]);
-        s_ka_sock[slot] = -1;
-    }
+    was_active = atomic_load(&s->active);
+    if (was_active) atomic_store_explicit(&s->active, 0, memory_order_release);
+    old_sock = s_ka_sock[slot];
+    s_ka_sock[slot] = -1;
     s_send_ka[slot] = false;
-    uint32_t group = s->mcast_ip;
+    group = s->mcast_ip;
     s->mcast_ip = 0;
-    if (group) {
-        bool still_used = false;
-        for (unsigned i = 0; i < SLOTS; i++) still_used |= (s_ctl[i].used && i != slot && s_slot[i].mcast_ip == group);
-        if (!still_used) net_mcast_leave(group);
-    }
     memset(&s_ctl[slot], 0, sizeof s_ctl[slot]);
+    still_used = false;
+    if (group) {
+        for (unsigned i = 0; i < SLOTS; i++) {
+            still_used |= (s_ctl[i].used && i != slot && s_slot[i].mcast_ip == group);
+        }
+    }
     aoip_unlock();
+
+    // Phase 2 (unlocked): quiesce, socket close, multicast leave.
+    if (was_active) quiesce();
+    if (old_sock >= 0) close(old_sock);
+    if (group && !still_used) net_mcast_leave(group);
 }
 
 static void rebuild_map(unsigned slot)
@@ -349,22 +375,24 @@ void frx_connect_channel(unsigned slot, unsigned ch_in_flow, unsigned local_ch)
 {
     if (slot >= SLOTS || local_ch >= UI_CHANNELS) return;
     aoip_lock();
-    if (s_ctl[slot].used && ch_in_flow < s_ctl[slot].nch) {
-        s_ctl[slot].channels_map[ch_in_flow] |= 1u << local_ch;
-        rebuild_map(slot);
-    }
+    bool ok = s_ctl[slot].used && ch_in_flow < s_ctl[slot].nch;
+    if (ok) s_ctl[slot].channels_map[ch_in_flow] |= 1u << local_ch;
     aoip_unlock();
+    // rebuild_map() can quiesce (2 ms) when the previous switch was very
+    // recent: run it without holding aoip_lock. Only the subscriber task
+    // mutates channels_map, and the hook reads the new table through the
+    // map_idx acquire/release handoff.
+    if (ok) rebuild_map(slot);
 }
 
 void frx_disconnect_channel(unsigned slot, unsigned ch_in_flow, unsigned local_ch)
 {
     if (slot >= SLOTS || local_ch >= UI_CHANNELS) return;
     aoip_lock();
-    if (s_ctl[slot].used && ch_in_flow < s_ctl[slot].nch) {
-        s_ctl[slot].channels_map[ch_in_flow] &= ~(1u << local_ch);
-        rebuild_map(slot);
-    }
+    bool ok = s_ctl[slot].used && ch_in_flow < s_ctl[slot].nch;
+    if (ok) s_ctl[slot].channels_map[ch_in_flow] &= ~(1u << local_ch);
     aoip_unlock();
+    if (ok) rebuild_map(slot);
 }
 
 uint32_t frx_last_packet_ms(unsigned slot)

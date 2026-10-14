@@ -206,8 +206,11 @@ static void ctl_task(void *arg)
             t_ka = now;
             frx_keepalive_tick();
         }
-        settings_flush_if_due();
         aoip_unlock();
+        // Both are self-locking and slow (mDNS round-trips, NVS commit):
+        // outside the shared hold so control-plane requests keep flowing.
+        aoip_mdns_publish_if_pending();
+        settings_flush_if_due();
     }
 }
 

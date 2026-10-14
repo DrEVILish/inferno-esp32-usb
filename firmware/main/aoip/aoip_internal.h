@@ -89,6 +89,8 @@ void info_poll(void);
 esp_err_t aoip_mdns_init(void);
 void aoip_mdns_ip_changed(void);        // (re)enable + announce on the netif
 void aoip_mdns_publish_all(void);       // device services + all TX channels
+void aoip_mdns_request_republish(void);   // defer publish_all past the serve() lock
+void aoip_mdns_publish_if_pending(void);  // ctl loop: republish after unlock
 void aoip_mdns_refresh_tx_channel(unsigned index);
 void aoip_mdns_remove_tx_channel_name(unsigned index, const char *name);
 void aoip_mdns_add_bundle(unsigned bundle_id, unsigned nch, unsigned fpp,

@@ -472,7 +472,9 @@ static uint16_t op_set_device_name(const uint8_t *c, size_t clen)
         ESP_LOGI(TAG, "renaming device '%s' -> '%s'", g_aoip.friendly_hostname, name);
         strcpy(g_aoip.friendly_hostname, name);
         settings_mark_dirty(SET_DIRTY_NAMES);
-        aoip_mdns_publish_all();
+        // Full republish (~70 mDNS ops) is deferred past the serve() lock;
+        // the ctl loop picks it up after unlock.
+        aoip_mdns_request_republish();
     }
     return RR_CODE_OK;
 }

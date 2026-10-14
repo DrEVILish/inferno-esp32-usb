@@ -194,6 +194,24 @@ void aoip_mdns_publish_all(void)
     txm_mdns_republish();
 }
 
+// Deferred full republish: a device rename (ARC 0x1001) runs under the
+// serve() aoip_lock, and publish_all() performs ~70 mDNS operations. The
+// handler only sets the flag; the ctl loop performs the republish after
+// releasing the lock. Both run in the ctl task: no locking needed.
+static bool s_republish_pending;
+
+void aoip_mdns_request_republish(void)
+{
+    s_republish_pending = true;
+}
+
+void aoip_mdns_publish_if_pending(void)
+{
+    if (!s_republish_pending) return;
+    s_republish_pending = false;
+    aoip_mdns_publish_all();
+}
+
 void aoip_mdns_add_bundle(unsigned bundle_id, unsigned nch, unsigned fpp, uint32_t ip, uint16_t port)
 {
     if (!s_up) return;
@@ -308,6 +326,49 @@ static bool parse_chan_txt(const mdns_result_t *r, aoip_adv_chan_t *o)
 #define QUERY_TIMEOUT_MS 3000u
 #define QUERY_BATCH      8u
 
+// A-record fallback cache: one badly-announcing host subscribed on many
+// channels used to cost one 3 s mdns_query_a() per channel (~100 s for 32).
+// The SRV answers for those channels all carry the same hostname, so the
+// first fallback resolves it and the rest reuse the address. Updated
+// whenever an SRV answer already carries an IPv4 address, so a transmitter
+// that changes address is picked up on the next resolve. Subscriber task
+// only (the sole caller of aoip_mdns_query_chans); no locking.
+#define HOST_IP_CACHE_N 8u
+
+typedef struct {
+    char     host[AOIP_NAME_LEN];
+    uint32_t ip;        // net order, 0 = slot free
+} host_ip_cache_t;
+
+static host_ip_cache_t s_host_cache[HOST_IP_CACHE_N];
+static unsigned s_host_cache_victim;
+
+static bool host_cache_lookup(const char *hostname, uint32_t *ip_out)
+{
+    for (unsigned i = 0; i < HOST_IP_CACHE_N; i++) {
+        if (s_host_cache[i].ip != 0 && strcmp(s_host_cache[i].host, hostname) == 0) {
+            *ip_out = s_host_cache[i].ip;
+            return true;
+        }
+    }
+    return false;
+}
+
+static void host_cache_store(const char *hostname, uint32_t ip)
+{
+    if (ip == 0 || hostname[0] == 0) return;
+    for (unsigned i = 0; i < HOST_IP_CACHE_N; i++) {
+        if (s_host_cache[i].ip != 0 && strcmp(s_host_cache[i].host, hostname) == 0) {
+            s_host_cache[i].ip = ip;
+            return;
+        }
+    }
+    host_ip_cache_t *v = &s_host_cache[s_host_cache_victim];
+    s_host_cache_victim = (s_host_cache_victim + 1u) % HOST_IP_CACHE_N;
+    snprintf(v->host, sizeof v->host, "%s", hostname);
+    v->ip = ip;
+}
+
 void aoip_mdns_query_chans(const char (*host)[AOIP_NAME_LEN], const char (*chan)[AOIP_NAME_LEN],
                            size_t n, aoip_adv_chan_t *out, bool *ok)
 {
@@ -342,9 +403,12 @@ void aoip_mdns_query_chans(const char (*host)[AOIP_NAME_LEN], const char (*chan)
                         break;
                     }
                 }
-                if (!o->ip) {
+                if (o->ip) {
+                    host_cache_store(rs->hostname, o->ip);
+                } else if (!host_cache_lookup(rs->hostname, &o->ip)) {
                     esp_ip4_addr_t a4 = { 0 };
                     if (mdns_query_a(rs->hostname, QUERY_TIMEOUT_MS, &a4) == ESP_OK) o->ip = a4.addr;
+                    if (o->ip) host_cache_store(rs->hostname, o->ip);
                 }
                 good = o->ip != 0;
             }

@@ -31,6 +31,7 @@
 
 #include "app_config.h"
 #include "aoip/aoip_internal.h"
+#include "aoip/fpp.h"
 #include "aoip/proto.h"
 
 static const char *TAG = "aoip_sub";
@@ -457,11 +458,31 @@ static void resolve_subscriptions(void)
             f->created_ms = aoip_now_ms();
             const unsigned bps = first.bits / 8u;
             unsigned fpp_mtu = RX_MAX_PAYLOAD_BYTES / (per_flow * bps);
-            unsigned fpp = first.fpp_max < fpp_mtu ? first.fpp_max : fpp_mtu;
-            // ... and no more than fits our latency profile (a packet arrives
-            // at least fpp frames after its timestamp)
-            if (fpp > UI_TX_FPP_MAX) fpp = UI_TX_FPP_MAX;
-            if (fpp < first.fpp_min) fpp = first.fpp_min;
+            unsigned fpp;
+            if (first.fpp_min > fpp_mtu) {
+                // The transmitter needs bigger packets than fit an
+                // unfragmented frame: they would fragment and never reach
+                // the audio hook (net.c drops fragments), so this flow
+                // could only ever deliver silence. Refuse it instead.
+                ESP_LOGW(TAG, "transmitter minimum fpp %u exceeds MTU cap %u (" IPSTR ":%u)",
+                         first.fpp_min, fpp_mtu,
+                         IP2STR((esp_ip4_addr_t *)&first.ip), first.port);
+                for (unsigned k = 0; k < cnt; k++) {
+                    uint32_t al = alias[rep_of[list[start + k]]];
+                    for (unsigned ch = 0; ch < NCH; ch++) {
+                        if (al & (1u << ch)) set_status(ch, SUB_STATUS_TX_FAIL, &changed);
+                    }
+                }
+                continue;
+            }
+            fpp = aoip_select_fpp(first.fpp_min, first.fpp_max, fpp_mtu, UI_TX_FPP_MAX);
+            if (fpp > UI_TX_FPP_MAX) {
+                // Above only the latency cap: request the transmitter's
+                // minimum anyway (degraded; the shortfall shows in rx_late).
+                ESP_LOGW(TAG, "transmitter minimum fpp %u exceeds latency cap %u (" IPSTR ":%u)",
+                         first.fpp_min, UI_TX_FPP_MAX,
+                         IP2STR((esp_ip4_addr_t *)&first.ip), first.port);
+            }
             if (fpp == 0) fpp = 1;
             char flow_name[16];
             snprintf(flow_name, sizeof flow_name, "%d_%u", fl + 1, g_aoip.process_id);
