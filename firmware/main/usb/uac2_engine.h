@@ -152,6 +152,12 @@ static inline uint64_t eng_uf(const uac2_engine_t *e) { return e->uf; }
 // Fill the next IN packet; returns its length in bytes (frames * 128).
 uint32_t eng_in_packet(uac2_engine_t *e, void *dst);
 
+// Split pair used by the IRAM arm path: stage renders without consuming
+// the ring, commit (after a successful usbd_edpt_xfer) advances r and
+// clears. eng_in_packet() is stage+commit in one (host simulation).
+uint32_t eng_stage_in_packet(uac2_engine_t *e, void *dst);
+void eng_commit_in_packet(uac2_engine_t *e, uint32_t bytes);
+
 // Next feedback value, 16.16 frames per microframe (dithered to carry the
 // sub-LSB part of the 8.24 estimate).
 uint32_t eng_fb_q16(uac2_engine_t *e);

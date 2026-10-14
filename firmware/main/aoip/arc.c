@@ -471,7 +471,8 @@ static uint16_t op_set_device_name(const uint8_t *c, size_t clen)
     } else {
         const size_t n = strlen(name);
         const bool first_ok = (name[0] >= 'a' && name[0] <= 'z') || (name[0] >= 'A' && name[0] <= 'Z');
-        if (n > AOIP_NAME_LEN - 2u || !first_ok || name[n - 1] == '-') {
+        // fork rule: 1-31 chars (AOIP_NAME_LEN - 1)
+        if (n > AOIP_NAME_LEN - 1u || !first_ok || name[n - 1] == '-') {
             ESP_LOGW(TAG, "rename device: invalid name '%s'", name);
             return RR_CODE_TODO_ERROR;
         }

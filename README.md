@@ -28,9 +28,10 @@ Dev board: **Waveshare ESP32-P4-ETH** (RJ45/IP101; HS USB OTG on its 4-pin heade
 | `firmware/` | ESP-IDF v6.1 firmware (C). See table below |
 | `docs/` | Design notes, bench procedure, roadmap. See index below |
 | `hardware/` | Own rev-1 board: SKiDL schematic-as-code → KiCad PCB (placement done, not routed) |
-| `tools/` | Build scripts, host test/probe tools, simulations |
+| `tools/` | Build scripts, host test/probe tools, simulations, host test runner |
 | `patches/` | `esp_eth-rx64.patch`: raises IDF v6.1 EMAC RX ring cap 30 → 64 |
 | `third_party/` | **Reference clones, study only, never committed** (see `.gitignore`): `inferno-esp32-p4` (8-ch RX-only prior art) and `inferno-upstream` (protocol reference) |
+| `CHANGELOG.md` | Change log of the post-import work (releases 0.1.0/0.1.1) |
 
 ## Firmware
 

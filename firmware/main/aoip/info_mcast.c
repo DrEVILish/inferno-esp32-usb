@@ -241,10 +241,11 @@ static void send_network_info(void)
 
 // Info-request rate limit: unauthenticated UDP on port 8700, and every
 // answer is a byte-heavy multicast to 224.0.0.231 — a hostile host used to
-// be able to elicit them at line rate. Token bucket: one token per 250 ms,
-// burst 32 (a Dante Controller instance asks at ~4 Hz).
-#define INFO_TOKENS_MAX     32u
-#define INFO_TOKEN_MS      250u
+// be able to elicit them at line rate. Token bucket: one token per 62.5 ms
+// (16 answers/s ceiling ≈ 43 kbit/s of multicast), burst 64 so a controller
+// polling a few probes at connect is never short of a token.
+#define INFO_TOKENS_MAX     64u
+#define INFO_TOKEN_MS        62u
 
 static bool info_take_token(void)
 {

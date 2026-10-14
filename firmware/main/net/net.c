@@ -538,11 +538,14 @@ esp_err_t net_udp_send_raw(const net_udp_dest_t *d, const void *payload, size_t 
 esp_err_t net_udp_send_raw_ts(const net_udp_dest_t *d, const void *payload, size_t len, uint64_t *tx_ts_ns)
 {
     *tx_ts_ns = 0;
-    net_udp_dest_seal((net_udp_dest_t *)d);     // keep the source address current
     if (!d || !d->resolved || len == 0 || len > RAW_MAX_PAYLOAD || !payload || !s_eth) {
         atomic_fetch_add_explicit(&s_tx_raw_fail, 1, memory_order_relaxed);
         return ESP_ERR_INVALID_ARG;
     }
+    // Keep the source address current before the timestamped send (caller
+    // owns the dest — ptpv1's s_dst_event). Sealed templates only: a NULL
+    // dest never reaches here (checked above).
+    net_udp_dest_seal((net_udp_dest_t *)d);
     uint8_t hdr[RAW_HDR_LEN];
     send_head(d, len, hdr);
 
