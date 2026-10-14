@@ -4,6 +4,55 @@ All notable changes after the initial import. Format loosely based on Keep
 a Changelog; "verifiable" = the claim is covered by a host test or
 deterministic review, "bench" = still gated on hardware.
 
+## [0.1.2] — 2026-10-14: second full review round (5 dimensions)
+
+Fresh review of the whole tree (bugs/edge cases, performance, security,
+style, error handling). Two Warning findings fixed:
+
+- **info_mcast.c (security):** the info-request token bucket's clamp broke
+  whenever one idle gap longer than ~4 s preceded a refill burst —
+  `INFO_TOKENS_MAX - refill` underflows for `refill >= 64`, so the "else"
+  branch added tokens uncapped and every long idle period accumulated a
+  possibility of a six-figure burst allocation. Net effect: the anti-flood
+  limit silently disarmed itself after any quiet stretch, and the next
+  request burst elicited an unbounded sequence of ~340-byte multicasts
+  (line-rate amplification for a moment). Reworked with an always-clamped
+  addition plus fractional-token carry (the previous code also shaved up
+  to one token per refill under a steady drip, so the documented 16/s
+  ceiling is now actually delivered).
+- **net.c (edge case):** the RX fragment filter masked `0x3FFF`, which
+  keeps the MF flag (0x2000) — a *first* fragment (MF set, offset 0) of a
+  fragmented UDP datagram passed as "unfragmented" and was handed to the
+  audio/keepalive hooks (its payload stops at the fragment boundary, its
+  media header is truncated garbage) while the continuation fragments were
+  dropped by lwIP instead of reassembled. Only continuation fragments had
+  been rejected. The filter now requires the whole flags+fragment word
+  (mask 0x7FFF) to be zero.
+
+Review conclusions with no change needed (verified, for the record):
+
+- uac2.c the arm paths hold: the OUT era guard cannot swallow a live
+  transfer (it only moves inside the SET_INTERFACE critical section), and
+  the wrap-to-collision of the u8 era takes 2^8 SET_INTERFACE cycles with
+  a latched stale completion at exactly the wrap instant — noted as a
+  backlog suggestion (widen to u16) rather than fixed.
+- subscriber.c the alias/reuse/flow-slot logic is consistent; one edge is
+  documented as backlog (command-queue-full leaves a channel stuck in
+  status UNRESOLVED — pathological since the queue is 64 deep).
+- settings_nvs.c the dirty/shadow/quiet-period policy is correct; two
+  backlog suggestions recorded (unsupported version silently downgrades to
+  defaults and later overwrites those records; persistent NVS failure
+  retries every 2 s forever without backoff).
+- flows_rx.c the hook/alive lives up to its comments ("active" handoff,
+  map double-buffer, peaks races are by design); keepalives hitting a
+  media port already die on the `len <= MEDIA_HEADER_LEN` check before
+  any timestamp parse, but the hook never validates `MEDIA_BYTE0` — a
+  stray ≥10-byte packet is merely counter noise (backlog suggestion).
+- telemetry/read performance: the per-packet `esp_timer_get_time()` in the
+  RX hook (~0.2 % of a core at 24 k pps) stays until the bench says
+  otherwise; the unauthenticated telemetry socket is within the documented
+  trusted-LAN threat model but is now listed as hardening backlog.
+
 ## [0.1.1] — 2026-10-14: regression-audit pass on 0.1.0
 
 Deep re-review of everything below with three lenses: reliability,

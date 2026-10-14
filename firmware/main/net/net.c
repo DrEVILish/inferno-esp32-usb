@@ -139,7 +139,10 @@ static esp_err_t rx_input_body(esp_eth_handle_t eth, uint8_t *buf, uint32_t len,
         uint32_t ip_total = rd16(ip + 2);
         uint16_t frag = rd16(ip + 6);
         if ((ip[0] >> 4) == 4u && ihl >= IP_HDR_LEN && ip[9] == IPPROTO_UDP_NUM &&
-                (frag & 0x3FFFu) == 0 &&                            // not a fragment
+                (frag & 0x7FFFu) == 0 &&    // not a fragment: MF (a first fragment
+                                                // has MF set) or a nonzero offset
+                                                // means a datagram we cannot parse
+                                                // whole; bit 15 (R) is 0 in IPv4
                 ip_total >= ihl + UDP_HDR_LEN && ETH_HDR_LEN + ip_total <= len) {
             const uint8_t *udp = ip + ihl;
             uint16_t dport = rd16(udp + 2);

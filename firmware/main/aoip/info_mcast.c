@@ -252,10 +252,19 @@ static bool info_take_token(void)
     static uint32_t tokens = INFO_TOKENS_MAX;
     static uint32_t last_refill_ms;
     const uint32_t now = aoip_now_ms();
+    // One token per INFO_TOKEN_MS of elapsed time, fractional time carried
+    // in the clock (advance by refill * INFO_TOKEN_MS, not to `now`, so a
+    // steady drip never shaves up to one token per refill period). The
+    // addition is always clamped: a plain "tokens <= MAX - refill" ternary
+    // breaks once refill alone exceeds the burst (any ~4 s idle gap), and
+    // then every long idle accumulates unbounded free tokens — the rate
+    // limit would silently disarm itself and release a flood on the next
+    // request burst.
     const uint32_t refill = (now - last_refill_ms) / INFO_TOKEN_MS;
     if (refill) {
-        tokens = tokens > INFO_TOKENS_MAX - refill ? INFO_TOKENS_MAX : tokens + refill;
-        last_refill_ms = now;
+        const uint32_t t = tokens + refill;
+        tokens = t >= INFO_TOKENS_MAX ? INFO_TOKENS_MAX : t;
+        last_refill_ms += refill * INFO_TOKEN_MS;
     }
     if (tokens == 0) {
         CTR_INC(info_drops);
