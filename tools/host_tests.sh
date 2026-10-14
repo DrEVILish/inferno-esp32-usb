@@ -12,6 +12,9 @@ CF="-O1 -std=gnu11 -Wall -Wextra -Wno-unused-parameter -DUAC2_HOST_SIM -I$ROOT/f
 echo "== fpp_select_test"
 gcc $CF "$ROOT/tools/fpp_select_test.c" -o "$OUT/fpp" && "$OUT/fpp"
 
+echo "== mdns_txt_test (TXT values range-checked before narrowing)"
+gcc $CF "$ROOT/tools/mdns_txt_test.c" "$ROOT/firmware/main/aoip/mdns_txt.c" -o "$OUT/mdns_txt" && "$OUT/mdns_txt"
+
 echo "== checksum_test"
 gcc -O1 -Wall -Wextra "$ROOT/tools/checksum_test.c" -o "$OUT/cksum" && "$OUT/cksum"
 

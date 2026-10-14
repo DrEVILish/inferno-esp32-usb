@@ -232,9 +232,9 @@ typedef struct {
     uint32_t status;                    // SUB_STATUS_*
 } sub_info_t;
 
-esp_err_t sub_start(void);
-void sub_subscribe(unsigned local_ch, const char *txch, const char *host);  // ctl task
-void sub_unsubscribe(unsigned local_ch);                                   // ctl task
+esp_err_t sub_start(void);                     // idempotent; retryable after RC failure
+bool sub_subscribe(unsigned local_ch, const char *txch, const char *host); // ctl task; false = not enqueued
+bool sub_unsubscribe(unsigned local_ch);                                   // ctl task; false = not enqueued
 void sub_get_info(unsigned local_ch, sub_info_t *out);
 void sub_counts(uint32_t *total, uint32_t *ok);
 

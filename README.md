@@ -9,15 +9,20 @@ Fixed-function 32×32 audio bridge: Inferno-compatible AoIP on RJ45 ↔ USB Audi
 
 Target SoC: **ESP32-P4** — the only ESP32 with High-Speed USB (32×32 needs it; the S3's Full-Speed port tops out around 2–4 channels) plus an Ethernet MAC with IEEE 1588 hardware timestamps.
 
-> Status: firmware for milestones M1–M5 is written but **not yet run on hardware** (2026-10-13). Next steps are bench order, own board, and open questions in `docs/30-roadmap.md`. Not affiliated with or endorsed by any AoIP protocol vendor.
+> Status: firmware for milestones M1–M5 is written but **not yet run on hardware** (2026-10-13). Until the bench matrix (docs/20/21) has passed, USB enumeration/throughput, Ethernet/PTP behaviour and the real-time figures quoted in the docs are **claims, not measurements** — do not rely on them. Next steps are bench order, own board, and open questions in `docs/30-roadmap.md`. Not affiliated with or endorsed by any AoIP protocol vendor.
 
 **Threat model:** this is a dissector of an unauthenticated Dante-class
 protocol on a LAN. The control plane (ARC/CMC/flow-control, ports 4440/8800/4455)
 and info multicast accept any host: basic sanity (destination checks,
 rate limits, name validation) is enforced, and abuse is counted in telemetry
 (`aoip_info_drops`, `ptp_hw_*`, …), but there is no authentication — as with
-Dante/Inferno itself. Assign it a port on a managed switch, not a flat,
-hostile network.
+Dante/Inferno itself. A hostile host on the same segment can re-route RX
+channels, rename every channel, create or stop TX flows, and keep the
+control task busy; info multicast is bounded by a token bucket and
+degraded-startup state is visible in telemetry (`aoip_start_degraded`).
+Assign it a port on a managed switch with ACLs / IGMP snooping, never a
+flat, hostile network; if hostile LANs are actually in scope, an
+authentication layer would have to be added on top (protocol-divergent).
 
 Dev board: **Waveshare ESP32-P4-ETH** (RJ45/IP101; HS USB OTG on its 4-pin header → USB-C pigtail).
 

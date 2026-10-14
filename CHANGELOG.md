@@ -4,6 +4,66 @@ All notable changes after the initial import. Format loosely based on Keep
 a Changelog; "verifiable" = the claim is covered by a host test or
 deterministic review, "bench" = still gated on hardware.
 
+## [0.1.3] — 2026-10-14: review-round 2 fixes (8 findings)
+
+All findings from the second external review round. "Fixed" items carry a
+verification; the two design-constraint items get documentation parity.
+
+1. **Fixed · AoIP TXT values wrap before validation (subscribes the wrong
+   channel):** the mDNS chan/bundle TXT parser narrowed parsed integers
+   straight into 16-bit fields — `id=65537` became channel 1 and got
+   subscribed as if the transmitter advertised it. The parsing split out of
+   `aoip_mdns.c` into `aoip/mdns_txt.c|h` (host-testable), every integer is
+   now range-checked against its protocol limit *before* the narrowing
+   (ints ≤ u16, `1 ≤ id ≤ nchan`, depth 16..32 byte-aligned, fpp pair
+   nonzero and ≤ u16, bundle address/port present and nonzero), and the
+   subscriber's own post-checks stay as belt-and-braces. New host test
+   `tools/mdns_txt_test.c` (chan + bundle vectors, wrap cases, valueless
+   keys) in `tools/host_tests.sh`.
+2. **Fixed · A full command queue silently lost subscription changes:**
+   `sub_subscribe()` published "subscribed" state before the nonblocking
+   enqueue; a full queue left a state nothing would reconcile (and a
+   dropped unsubscribe left the stream active). Queueing now happens first
+   (one bounded 250 ms wait against a busy resolve), visible state is
+   published only on success, and `sub_subscribe/sub_unsubscribe` return
+   bool: ARC 0x3010/0x3014 reply TODO ERROR when a command could not even
+   be enqueued. The `resolve` hard deadline (see 4) bounds the queue-full
+   window itself.
+3. **Fixed · Socket / subscriber startup failures ran half a device
+   silently:** the four server sockets and the subscriber task now start
+   through `ctl_ensure_started()` — bind/task failures are retried every
+   10 s from the control loop, transitions are logged once, and the bits
+   (arc/cmc/info/fcs/sub) surface in telemetry as `aoip_start_degraded`
+   (`aoip.h` new field, `tools/net_stats.py watch` shows `0x0` when whole).
+   `sub_start()` became idempotent and retryable (queue kept, no
+   double-init).
+4. **Fixed · mDNS fallback lookups blocked the subscriber task ~96 s:**
+   the serial per-host 3 s `mdns_query_a` fallback is gone. All channels'
+   SRV+TXT queries now start at once (staggered like the Inferno client)
+   and gather under a hard 4.2 s deadline; a second parallel round for the
+   distinct hosts whose SRV answer carried no IPv4 address gathers under
+   its own 2.8 s deadline; searches that outlive their window are parked
+   and reaped at the start of the next cycle (no handle leaks). Worst case
+   per resolve is now ~7 s instead of ~96 s.
+5. **Fixed · Cached host addresses never expired:** the 8-entry host→IP
+   cache carries a timestamp and entries expire after 2 minutes (a peer
+   that changes address is picked up then). Names that are longer than the
+   cache key are not stored at all — a truncated entry could previously
+   have been served for a different host with the same 31-byte prefix.
+6. **Documented · No authentication on the control plane (design
+   constraint):** the README threat-model note now states the concrete
+   consequences (re-route RX, rename, create/stop TX flows, control-task
+   load) and the mitigations (managed switch, ACLs, IGMP snooping); an
+   auth layer would be protocol-divergent and is out of scope.
+7. **Documented · Firmware not yet exercised on hardware (validation
+   gap):** README status section now says explicitly that all UX/latency
+   figures are claims until the M1–M8 bench matrix has passed.
+8. **Fixed · Profiling probes always in the hot path:** the t_* probes are
+   gated by new Kconfig `USBINF_PERF_PROBES` (default y while the bench
+   matrix runs). With it off, `perf_begin/end` compile to no-ops and the
+   `t_*` telemetry keys stop appearing; documented in `docs/15 §1` for the
+   post-bench production image.
+
 ## [0.1.2] — 2026-10-14: second full review round (5 dimensions)
 
 Fresh review of the whole tree (bugs/edge cases, performance, security,

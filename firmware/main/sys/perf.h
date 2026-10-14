@@ -20,6 +20,8 @@
 #include "esp_attr.h"
 #include "esp_cpu.h"
 
+#include "app_config.h"     // UI_PERF_PROBES
+
 typedef enum {
     PERF_RX_INPUT = 0,  // net.c rx_input: whole EMAC RX fast path per frame
     PERF_RX_HOOK,       // flows_rx.c rx_hook: audio decode per audio packet
@@ -46,6 +48,9 @@ const char *perf_name(perf_probe_t p);
 // Shared probe state (perf.c). The histograms are relaxed atomics so both
 // cores record; the start slots are indexed per core, and each probe ID is
 // single-context, so plain slots are safe (no cross-core sharing).
+// UI_PERF_PROBES = 0 (Kconfig USBINF_PERF_PROBES off) compiles the begin/
+// end pair down to no-ops; the telemetry t_* keys then never appear
+// (perf_report() sees an empty histogram) and nothing else changes.
 typedef struct {
     _Atomic uint32_t bucket[33];    // [i] = durations in [8i, 8i+8), [32] = overflow
     _Atomic uint32_t max;           // exact max, cycles
@@ -56,6 +61,7 @@ extern uint32_t s_perf_start[2][PERF_N];    // [core][probe], 0 = not bracketing
 
 static inline uint32_t perf_cycle_now(void) { return esp_cpu_get_cycle_count(); }
 
+#if UI_PERF_PROBES
 static inline void perf_begin(perf_probe_t p)
 {
     s_perf_start[esp_cpu_get_core_id()][p] = perf_cycle_now();
@@ -79,3 +85,7 @@ static inline void perf_end(perf_probe_t p)
                                                   memory_order_relaxed,
                                                   memory_order_relaxed)) {}
 }
+#else
+static inline void perf_begin(perf_probe_t p) { (void)p; }
+static inline void perf_end(perf_probe_t p) { (void)p; }
+#endif

@@ -187,6 +187,7 @@ static size_t snapshot(char *buf, size_t cap)
     KV("aoip_arc_requests=%lu", (unsigned long)as.arc_requests);
     KV("aoip_nvs_writes=%lu", (unsigned long)as.nvs_writes);
     KV("aoip_nvs_skipped=%lu", (unsigned long)as.nvs_skipped);
+    KV("aoip_start_degraded=0x%lx", (unsigned long)as.start_degraded);
     KV("aoip_info_drops=%lu", (unsigned long)as.info_drops);
     KV_WIN("lat_rx_margin_min", as.rx_margin_min, INT32_MAX);
     for (unsigned i = 0; i < UI_RX_MAX_FLOWS; i++) {

@@ -73,4 +73,13 @@ menu "usb-inferno build profile"
         bool "Test: network TX channel N carries a -20 dBFS sine at N x 100 Hz (ignores USB)"
         default n
 
+    config USBINF_PERF_PROBES
+        bool "Instrument the packet paths with cycle-probe histograms (docs/15)"
+        default y
+        help
+            The t_* telemetry probes add ~1-3 % of one core at profile-2
+            packet rates. Keep them on while running the bench matrix
+            (docs/15, docs/21); turn this off for a final production image
+            once it has been measured.
+
 endmenu

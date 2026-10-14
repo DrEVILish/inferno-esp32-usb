@@ -45,14 +45,15 @@ void sub_get_info(unsigned local_ch, sub_info_t *out)
     memset(out, 0, sizeof *out);
 }
 
-void sub_subscribe(unsigned local_ch, const char *txch, const char *host)
+bool sub_subscribe(unsigned local_ch, const char *txch, const char *host)
 {
     (void)local_ch;
     (void)txch;
     (void)host;
+    return true;
 }
 
-void sub_unsubscribe(unsigned local_ch) { (void)local_ch; }
+bool sub_unsubscribe(unsigned local_ch) { (void)local_ch; return true; }
 
 const ftx_info_t *ftx_get(unsigned index)
 {

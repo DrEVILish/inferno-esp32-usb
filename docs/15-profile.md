@@ -30,7 +30,11 @@ code) costing ~10 cycles per pair; histograms live in internal `.bss`
 Constraints: begin/end same core; a probe never nests within itself; each
 probe ID lives in one execution context. Expected read-out overhead
 (~1-3 % of one core at profile-2 packet rates) applies to all numbers until
-the harness is removed after characterization (`docs/30` Phase B).
+the harness is removed after characterization (`docs/30` Phase B). The
+probes are gated by the build: Kconfig `USBINF_PERF_PROBES` (default y,
+while the bench runs) compiles begin/end to no-ops when turned off, and the
+`t_*` telemetry keys then simply stop appearing — production images are
+built with it off after the final matrix pass.
 
 ## 2. Telemetry
 

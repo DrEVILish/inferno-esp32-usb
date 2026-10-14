@@ -41,6 +41,8 @@ typedef struct {
     uint32_t info_drops;        // info requests refused by the rate limit
     uint32_t nvs_writes;            // NVS commits that changed flash
     uint32_t nvs_skipped;           // quiet periods with nothing new to write
+    uint32_t start_degraded;    // control-plane pieces not up (arc 1, cmc 2, info 4,
+                                // flow-control 8, subscriber 16); see aoip.c
     // latency windows since the previous aoip_get_stats() (frames;
     // INT32_MAX / INT32_MIN = no sample), see docs/14-latency.md
     int32_t  rx_margin_min;                 // all RX flows: ts + latency - arrival

@@ -32,6 +32,13 @@ aoip_counters_t g_aoip_ctr;
 
 static SemaphoreHandle_t s_lock;
 
+// Control-plane listen sockets. -1 = not open (see ctl_ensure_started).
+static int s_sock_arc = -1, s_sock_cmc = -1, s_sock_info = -1, s_sock_fcs = -1;
+// Bits of the control plane that are not up yet: arc 1, cmc 2, info 4,
+// flow-control server 8, subscriber task 16. Visible in telemetry as
+// aoip_start_degraded.
+static _Atomic uint32_t s_start_degraded;
+
 void aoip_lock(void) { xSemaphoreTakeRecursive(s_lock, portMAX_DELAY); }
 void aoip_unlock(void) { xSemaphoreGiveRecursive(s_lock); }
 
@@ -136,6 +143,62 @@ static void serve_info(int s, uint8_t *rx)
     aoip_unlock();
 }
 
+#define START_RETRY_MS 10000u
+
+// Open whatever control-plane resource is missing: the four server
+// sockets and the subscriber task. Called once at startup, then retried
+// from the control loop while a bit is degraded — a bind can fail
+// transiently (the socket was briefly in use across a restart) and a task
+// allocation can fail under memory pressure. Instead of the old behaviour
+// (log once, then run with those functions silently dead), the affected
+// bits land in telemetry as aoip_start_degraded and recovery is logged.
+static void ctl_ensure_started(void)
+{
+    typedef struct {
+        const char *tag;
+        int       *sock;
+        uint16_t   port;
+        uint32_t   bit;
+        bool       mcast_ttl;
+    } listen_t;
+    static listen_t l[4] = {
+        { "arc",  &s_sock_arc,  AOIP_PORT_ARC,           1u << 0, false },
+        { "cmc",  &s_sock_cmc,  AOIP_PORT_CMC,          1u << 1, false },
+        { "info", &s_sock_info, AOIP_PORT_INFO_REQUEST, 1u << 2, true  },
+        { "fcs",  &s_sock_fcs,  AOIP_PORT_FLOWS_CONTROL, 1u << 3, false },
+    };
+    uint32_t want = 0;
+    for (unsigned i = 0; i < 4; i++) {
+        if (*l[i].sock >= 0) continue;
+        *l[i].sock = udp_bind(l[i].port);
+        if (*l[i].sock < 0) continue;
+        if (l[i].mcast_ttl) {
+            uint8_t ttl = 1;
+            setsockopt(*l[i].sock, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof ttl);
+        }
+        if (l[i].sock == &s_sock_info) info_set_socket(*l[i].sock);
+        ESP_LOGI(TAG, "listening: %s", l[i].tag);
+    }
+    const esp_err_t sub_err = sub_start();      // idempotent (running → OK)
+    if (sub_err != ESP_OK) {
+        ESP_LOGE(TAG, "subscriber start failed: %s", esp_err_to_name(sub_err));
+    }
+    if (s_sock_arc  < 0) want |= 1u << 0;
+    if (s_sock_cmc  < 0) want |= 1u << 1;
+    if (s_sock_info < 0) want |= 1u << 2;
+    if (s_sock_fcs  < 0) want |= 1u << 3;
+    if (sub_err != ESP_OK) want |= 1u << 4;
+
+    const uint32_t was = atomic_exchange_explicit(&s_start_degraded, want, memory_order_relaxed);
+    const uint32_t added = want & ~was;
+    if (added) {
+        ESP_LOGE(TAG, "control plane not fully up: missing bits 0x%03lx (arc 1, cmc 2, "
+                      "info 4, flow-control 8, subscriber 16)", (unsigned long)added);
+    } else if (was & ~want) {
+        ESP_LOGI(TAG, "control plane recovered (0x%03lx)", (unsigned long)want);
+    }
+}
+
 static void ctl_task(void *arg)
 {
     static uint8_t rx[1500], tx[1500];
@@ -146,30 +209,26 @@ static void ctl_task(void *arg)
     txm_load_state();
     aoip_unlock();
 
-    int s_arc = udp_bind(AOIP_PORT_ARC);
-    int s_cmc = udp_bind(AOIP_PORT_CMC);
-    int s_info = udp_bind(AOIP_PORT_INFO_REQUEST);
-    int s_fcs = udp_bind(AOIP_PORT_FLOWS_CONTROL);
-    if (s_info >= 0) {
-        uint8_t ttl = 1;
-        setsockopt(s_info, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof ttl);
-    }
-    info_set_socket(s_info);        // creates the RX-channel notify queue ...
-    // ... which the subscriber task posts to: start it only now
-    if (sub_start() != ESP_OK) ESP_LOGE(TAG, "subscriber start failed");
+    ctl_ensure_started();
 
     uint32_t t_ip = 0, t_hb = aoip_now_ms(), t_100 = 0, t_ka = 0;
+    uint32_t t_start = aoip_now_ms();
     for (;;) {
         uint32_t now = aoip_now_ms();
         if (now - t_ip >= 200u) {
             t_ip = now;
             check_ip();
         }
+        if (atomic_load_explicit(&s_start_degraded, memory_order_relaxed) &&
+            now - t_start >= START_RETRY_MS) {
+            t_start = now;
+            ctl_ensure_started();
+        }
 
         fd_set rf;
         FD_ZERO(&rf);
         int maxfd = -1;
-        const int socks[4] = { s_arc, s_cmc, s_info, s_fcs };
+        const int socks[4] = { s_sock_arc, s_sock_cmc, s_sock_info, s_sock_fcs };
         for (int i = 0; i < 4; i++) {
             if (socks[i] >= 0) {
                 FD_SET(socks[i], &rf);
@@ -180,13 +239,13 @@ static void ctl_task(void *arg)
         int n = maxfd >= 0 ? select(maxfd + 1, &rf, NULL, NULL, &tv) : 0;
         if (maxfd < 0) vTaskDelay(pdMS_TO_TICKS(10));
         if (n > 0) {
-            if (s_arc >= 0 && FD_ISSET(s_arc, &rf)) {
+            if (s_sock_arc >= 0 && FD_ISSET(s_sock_arc, &rf)) {
                 CTR_INC(arc_requests);
-                serve(s_arc, arc_handle, rx, tx);
+                serve(s_sock_arc, arc_handle, rx, tx);
             }
-            if (s_cmc >= 0 && FD_ISSET(s_cmc, &rf)) serve(s_cmc, cmc_handle, rx, tx);
-            if (s_fcs >= 0 && FD_ISSET(s_fcs, &rf)) serve(s_fcs, fcs_handle, rx, tx);
-            if (s_info >= 0 && FD_ISSET(s_info, &rf)) serve_info(s_info, rx);
+            if (s_sock_cmc >= 0 && FD_ISSET(s_sock_cmc, &rf)) serve(s_sock_cmc, cmc_handle, rx, tx);
+            if (s_sock_fcs >= 0 && FD_ISSET(s_sock_fcs, &rf)) serve(s_sock_fcs, fcs_handle, rx, tx);
+            if (s_sock_info >= 0 && FD_ISSET(s_sock_info, &rf)) serve_info(s_sock_info, rx);
         }
 
         aoip_lock();
@@ -256,6 +315,7 @@ void aoip_get_stats(aoip_stats_t *s)
     s->info_drops = LD(info_drops);
 #undef LD
     s->nvs_skipped = settings_skipped_flushes();
+    s->start_degraded = atomic_load_explicit(&s_start_degraded, memory_order_relaxed);
     s->rx_margin_min = INT32_MAX;
     for (unsigned i = 0; i < UI_RX_MAX_FLOWS; i++) {
         s->rx_slot_margin_min[i] = frx_take_min_margin(i);

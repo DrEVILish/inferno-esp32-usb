@@ -4,6 +4,9 @@
 // device_server/mdns_server.rs (what we publish) and mdns_client.rs (how we
 // resolve transmitters' channels and multicast bundles).
 //
+// Publishing is espressif-mdns-specific; the TXT parsing of the lookup
+// side lives in aoip/mdns_txt.c and is host-tested.
+//
 // Published (hostname = friendly device name):
 //   <host>._netaudio-arc._udp    port 4440  arcp_vers, arcp_min, router_vers, router_info, mf, model
 //   <host>._netaudio-cmc._udp    port 8800  id (EUI-64), process, cmcp_vers, ..., channels, mf, model, "", ""
@@ -25,6 +28,8 @@
 #include "app_config.h"
 #include "net/net.h"
 #include "aoip/aoip_internal.h"
+#include "aoip/aoip.h"
+#include "aoip/mdns_txt.h"
 #include "aoip/proto.h"
 
 static const char *TAG = "aoip_mdns";
@@ -243,101 +248,57 @@ void aoip_mdns_remove_bundle(unsigned bundle_id)
 }
 
 // ---------------------------------------------------------------------------
-// Lookups (mdns_client.rs)
+// Lookups (mdns_client.rs). aoip_mdns.c adapts espressif/mdns results into
+// aoip_txt_kv_t lists; the parsing itself lives in mdns_txt.c (host-testable,
+// range-checked before any narrowing).
 // ---------------------------------------------------------------------------
-static const char *txt_get(const mdns_result_t *r, const char *key, char *buf, size_t cap)
+
+// Copy a result's TXT records into a view for mdns_txt_parse_*. Cap 32: our
+// publisher sends at most 13, well-behaved peers stay near that; a peer
+// with more keys yields the first 32 (a missing "b.*" key there only means
+// "no bundle reference" and is re-checked on the next resolve).
+static size_t txt_view(const mdns_result_t *r, aoip_txt_kv_t *out, size_t cap)
 {
-    for (size_t i = 0; r && i < r->txt_count; i++) {
-        if (r->txt[i].key && strcmp(r->txt[i].key, key) == 0) {
-            size_t n = r->txt_value_len ? r->txt_value_len[i] : 0;
-            if (!r->txt[i].value) n = 0;
-            if (n >= cap) n = cap - 1;
-            if (n) memcpy(buf, r->txt[i].value, n);
-            buf[n] = 0;
-            return buf;
-        }
+    size_t n = 0;
+    for (size_t i = 0; r && i < r->txt_count && n < cap; i++) {
+        if (!r->txt[i].key) continue;
+        out[n].key = r->txt[i].key;
+        out[n].value = r->txt[i].value;
+        out[n].value_len =
+            r->txt_value_len ? r->txt_value_len[i] : (r->txt[i].value ? strlen(r->txt[i].value) : 0);
+        n++;
     }
-    return NULL;
-}
-
-// parse_int_from_dict: "0x" prefix = hex, else decimal
-static bool txt_int(const mdns_result_t *r, const char *key, uint32_t *out)
-{
-    char buf[24];
-    const char *s = txt_get(r, key, buf, sizeof buf);
-    if (!s || !s[0]) return false;
-    char *end;
-    unsigned long v = (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) ? strtoul(s + 2, &end, 16)
-                                                                     : strtoul(s, &end, 10);
-    if (*end) return false;
-    *out = (uint32_t)v;
-    return true;
-}
-
-static bool parse_ipv4(const char *s, uint32_t *out)
-{
-    unsigned a, b, c, d;
-    char tail;
-    if (sscanf(s, "%u.%u.%u.%u%c", &a, &b, &c, &d, &tail) != 4) return false;
-    if (a > 255 || b > 255 || c > 255 || d > 255) return false;
-    uint8_t *p = (uint8_t *)out;
-    p[0] = (uint8_t)a; p[1] = (uint8_t)b; p[2] = (uint8_t)c; p[3] = (uint8_t)d;
-    return true;
-}
-
-static bool parse_chan_txt(const mdns_result_t *r, aoip_adv_chan_t *o)
-{
-    uint32_t v;
-    if (!txt_int(r, "nchan", &v)) return false;
-    o->nchan = (uint16_t)v;
-    if (!txt_int(r, "id", &v)) return false;
-    o->tx_channel_id = (uint16_t)v;
-    if (!txt_int(r, "enc", &v) && !txt_int(r, "en", &v)) return false;
-    o->bits = v;
-    if (!txt_int(r, "dbcp1", &v)) return false;
-    o->dbcp1 = (uint16_t)v;
-    char buf[24];
-    const char *fpp = txt_get(r, "fpp", buf, sizeof buf);
-    unsigned fmax, fmin;
-    if (!fpp || sscanf(fpp, "%u,%u", &fmax, &fmin) != 2) return false;
-    o->fpp_max = (uint16_t)fmax;
-    o->fpp_min = (uint16_t)fmin;
-    if (!txt_int(r, "latency_ns", &v)) return false;
-    o->min_latency_ns = v;
-    o->has_bundle = false;
-    for (size_t i = 0; i < r->txt_count; i++) {
-        const char *k = r->txt[i].key;
-        if (!k || strncmp(k, "b.", 2) != 0) continue;
-        char *end;
-        unsigned long bid = strtoul(k + 2, &end, 10);
-        if (*end || k[2] == 0) break;               // "Unable to parse multicast bundle key"
-        char vb[12];
-        if (!txt_get(r, k, vb, sizeof vb)) break;
-        unsigned long chb = strtoul(vb, &end, 10);
-        if (*end || chb == 0) break;
-        o->has_bundle = true;
-        o->bundle_id = (uint16_t)bid;
-        o->channel_in_bundle = (uint16_t)(chb - 1u);
-        break;
-    }
-    return true;
+    return n;
 }
 
 #define QUERY_TIMEOUT_MS 3000u
-#define QUERY_BATCH      8u
+
+// Hard deadlines for one resolve cycle. The old code queried in batches of
+// 8 and fell back to one *serial* 3 s A-record lookup per host whose SRV
+// answer carried no address: 32 channels on 32 distinct unresolved hosts
+// took up to ~96 s and stalled the subscriber task (so the command queue
+// backed up). Now all channels are asked at once and gathered under one
+// deadline; the A-record round for hosts without an SRV address runs in
+// parallel under its own deadline. Searches that outlive their window are
+// parked and reaped at the start of the next cycle, so nothing leaks.
+#define RESOLVE_SRV_MS 4200u    // SRV + TXT answer window
+#define RESOLVE_A_MS   2800u    // A-record window for hosts without an SRV IP
 
 // A-record fallback cache: one badly-announcing host subscribed on many
 // channels used to cost one 3 s mdns_query_a() per channel (~100 s for 32).
 // The SRV answers for those channels all carry the same hostname, so the
-// first fallback resolves it and the rest reuse the address. Updated
-// whenever an SRV answer already carries an IPv4 address, so a transmitter
-// that changes address is picked up on the next resolve. Subscriber task
-// only (the sole caller of aoip_mdns_query_chans); no locking.
-#define HOST_IP_CACHE_N 8u
+// first fallback resolves it and the rest reuse the address. Entries
+// expire after HOST_IP_CACHE_MS (a transmitter that changes address is
+// picked up again within that window) and are refreshed whenever an SRV
+// answer already carries an IPv4 address. Subscriber task only (the sole
+// caller of aoip_mdns_query_chans); no locking.
+#define HOST_IP_CACHE_N  8u
+#define HOST_IP_CACHE_MS (2u * 60u * 1000u)
 
 typedef struct {
     char     host[AOIP_NAME_LEN];
     uint32_t ip;        // net order, 0 = slot free
+    uint32_t seen_ms;   // aoip_now_ms() when stored or refreshed
 } host_ip_cache_t;
 
 static host_ip_cache_t s_host_cache[HOST_IP_CACHE_N];
@@ -345,21 +306,29 @@ static unsigned s_host_cache_victim;
 
 static bool host_cache_lookup(const char *hostname, uint32_t *ip_out)
 {
+    const uint32_t now = aoip_now_ms();
     for (unsigned i = 0; i < HOST_IP_CACHE_N; i++) {
-        if (s_host_cache[i].ip != 0 && strcmp(s_host_cache[i].host, hostname) == 0) {
-            *ip_out = s_host_cache[i].ip;
-            return true;
+        if (s_host_cache[i].ip == 0 || strcmp(s_host_cache[i].host, hostname) != 0) continue;
+        if (now - s_host_cache[i].seen_ms >= HOST_IP_CACHE_MS) {
+            s_host_cache[i].ip = 0;     // expired: resolve again next cycle
+            return false;
         }
+        *ip_out = s_host_cache[i].ip;
+        return true;
     }
     return false;
 }
 
 static void host_cache_store(const char *hostname, uint32_t ip)
 {
-    if (ip == 0 || hostname[0] == 0) return;
+    // Only storable names: a name that does not fit the key would be stored
+    // truncated and could then be served for a different host with the same
+    // 31-character prefix. Such hosts simply pay the (now parallel) lookup.
+    if (ip == 0 || hostname[0] == 0 || strlen(hostname) >= AOIP_NAME_LEN) return;
     for (unsigned i = 0; i < HOST_IP_CACHE_N; i++) {
         if (s_host_cache[i].ip != 0 && strcmp(s_host_cache[i].host, hostname) == 0) {
             s_host_cache[i].ip = ip;
+            s_host_cache[i].seen_ms = aoip_now_ms();
             return;
         }
     }
@@ -367,57 +336,180 @@ static void host_cache_store(const char *hostname, uint32_t ip)
     s_host_cache_victim = (s_host_cache_victim + 1u) % HOST_IP_CACHE_N;
     snprintf(v->host, sizeof v->host, "%s", hostname);
     v->ip = ip;
+    v->seen_ms = aoip_now_ms();
+}
+
+// Searches left uncollected when their gather deadline passed first. They
+// are drained at the start of the next cycle — by then their own timeout
+// has long elapsed, so their (discarded) results are ready and the handle
+// can be freed. Calling mdns_query_async_delete() on a still-running
+// search would report INVALID_STATE and leave the handle behind.
+// Size covers a full cycle: SRV + TXT for every channel, plus one A query
+// per host. Searches parked beyond a full pool are dropped (all 32
+// channels on 32 distinct silent hosts and a full pool is a full cycle).
+#define UNCOLLECTED_N (2u * UI_CHANNELS)
+
+static mdns_search_once_t *s_uncollected[UNCOLLECTED_N];
+
+static void uncollected_add(mdns_search_once_t *h)
+{
+    for (unsigned i = 0; i < UNCOLLECTED_N; i++) {
+        if (s_uncollected[i] == NULL) {
+            s_uncollected[i] = h;
+            return;
+        }
+    }
+    // full: the search will expire on its own; the handle is left for its
+    // own library to finish (bounded, rare, and only on a fully silent
+    // network where the next resolve cycle no longer runs).
+}
+
+static void uncollected_drain(void)
+{
+    for (unsigned i = 0; i < UNCOLLECTED_N; i++) {
+        if (!s_uncollected[i]) continue;
+        mdns_result_t *r = NULL;
+        uint8_t cnt = 0;
+        if (mdns_query_async_get_results(s_uncollected[i], 100u, &r, &cnt)) {
+            if (r) mdns_query_results_free(r);
+            (void)mdns_query_async_delete(s_uncollected[i]);
+            s_uncollected[i] = NULL;
+        }
+        // still running (only plausible right after startup): next cycle
+    }
+}
+
+// Wait for one search until done or `deadline`; the handle is always
+// consumed. Finished: return the results (caller frees with
+// mdns_query_results_free; NULL when the answer simply had no records).
+// Unfinished: park the handle for the next cycle and return NULL.
+static mdns_result_t *gather_search(mdns_search_once_t **qp, uint32_t deadline)
+{
+    mdns_result_t *r = NULL;
+    uint8_t cnt = 0;
+    mdns_search_once_t *q = *qp;
+    *qp = NULL;
+    if (!q) return NULL;
+    const int32_t rem = (int32_t)(deadline - aoip_now_ms());
+    if (mdns_query_async_get_results(q, rem > 0 ? (uint32_t)rem : 1u, &r, &cnt)) {
+        (void)mdns_query_async_delete(q);
+        return r;
+    }
+    uncollected_add(q);
+    return NULL;
+}
+
+// First IPv4 in an answer, 0 when none.
+static uint32_t result_v4(const mdns_result_t *r)
+{
+    for (const mdns_ip_addr_t *a = r ? r->addr : NULL; a; a = a->next) {
+        if (a->addr.type == ESP_IPADDR_TYPE_V4) return a->addr.u_addr.ip4.addr;
+    }
+    return 0;
 }
 
 void aoip_mdns_query_chans(const char (*host)[AOIP_NAME_LEN], const char (*chan)[AOIP_NAME_LEN],
                            size_t n, aoip_adv_chan_t *out, bool *ok)
 {
+    // Caller contract (channels_subscriber.rs): one entry per subscribed
+    // channel, n <= UI_CHANNELS. All bookkeeping below is static: subscriber
+    // task only, so the mDNS state stays off its 6 KB stack.
+    if (n > UI_CHANNELS) n = UI_CHANNELS;
     for (size_t i = 0; i < n; i++) ok[i] = false;
     if (!s_up) return;
-    for (size_t base = 0; base < n; base += QUERY_BATCH) {
-        size_t m = n - base < QUERY_BATCH ? n - base : QUERY_BATCH;
-        mdns_search_once_t *srv[QUERY_BATCH] = { 0 }, *txt[QUERY_BATCH] = { 0 };
-        char inst[QUERY_BATCH][2 * AOIP_NAME_LEN + 2];
-        for (size_t j = 0; j < m; j++) {
-            snprintf(inst[j], sizeof inst[j], "%s@%s", chan[base + j], host[base + j]);
-            srv[j] = mdns_query_async_new(inst[j], CHAN_SERVICE, PROTO_UDP, MDNS_TYPE_SRV,
-                                          QUERY_TIMEOUT_MS, 1, NULL);
-            txt[j] = mdns_query_async_new(inst[j], CHAN_SERVICE, PROTO_UDP, MDNS_TYPE_TXT,
-                                          QUERY_TIMEOUT_MS, 1, NULL);
-            vTaskDelay(pdMS_TO_TICKS(8));   // channels_subscriber.rs: 8 ms apart
+    uncollected_drain();
+
+    static mdns_search_once_t *qa[UI_CHANNELS];         // SRV per channel
+    static mdns_search_once_t *qt[UI_CHANNELS];         // TXT per channel
+    static char inst[UI_CHANNELS][2 * AOIP_NAME_LEN + 2];
+    static char shost[UI_CHANNELS][MDNS_NAME_BUF_LEN];  // hostname per SRV answer
+    static bool need_ip[UI_CHANNELS];                   // parsed, but address unknown
+    static aoip_txt_kv_t kv[32];
+    memset(qa, 0, sizeof qa);
+    memset(qt, 0, sizeof qt);
+    memset(shost, 0, sizeof shost);
+    memset(need_ip, 0, sizeof need_ip);
+
+    // Phase 1: ask every channel (SRV + TXT) at once, staggered like the
+    // Inferno client, then collect under one hard deadline.
+    const uint32_t t0 = aoip_now_ms();
+    for (size_t i = 0; i < n; i++) {
+        snprintf(inst[i], sizeof inst[i], "%s@%s", chan[i], host[i]);
+        qa[i] = mdns_query_async_new(inst[i], CHAN_SERVICE, PROTO_UDP, MDNS_TYPE_SRV,
+                                     QUERY_TIMEOUT_MS, 1, NULL);
+        qt[i] = mdns_query_async_new(inst[i], CHAN_SERVICE, PROTO_UDP, MDNS_TYPE_TXT,
+                                     QUERY_TIMEOUT_MS, 1, NULL);
+        vTaskDelay(pdMS_TO_TICKS(8));       // channels_subscriber.rs: 8 ms apart
+    }
+    const uint32_t srv_deadline = t0 + RESOLVE_SRV_MS;
+    for (size_t i = 0; i < n; i++) {
+        aoip_adv_chan_t *o = &out[i];
+        mdns_result_t *rs = gather_search(&qa[i], srv_deadline);
+        mdns_result_t *rt = gather_search(&qt[i], srv_deadline);
+        bool good = rs && rt && rs->hostname != NULL;
+        if (good) {
+            const size_t nv = txt_view(rt, kv, sizeof kv / sizeof kv[0]);
+            good = mdns_txt_parse_chan(kv, nv, o);
         }
-        for (size_t j = 0; j < m; j++) {
-            aoip_adv_chan_t *o = &out[base + j];
-            memset(o, 0, sizeof *o);
-            mdns_result_t *rs = NULL, *rt = NULL;
-            uint8_t ns = 0, nt = 0;
-            if (srv[j]) mdns_query_async_get_results(srv[j], QUERY_TIMEOUT_MS + 500u, &rs, &ns);
-            if (txt[j]) mdns_query_async_get_results(txt[j], QUERY_TIMEOUT_MS + 500u, &rt, &nt);
-            bool good = rs && rt && rs->hostname && parse_chan_txt(rt, o);
-            if (good) {
-                o->port = rs->port;
-                o->ip = 0;
-                for (mdns_ip_addr_t *a = rs->addr; a; a = a->next) {
-                    if (a->addr.type == ESP_IPADDR_TYPE_V4) {
-                        o->ip = a->addr.u_addr.ip4.addr;
-                        break;
+        if (good) {
+            o->port = rs->port;
+            o->ip = result_v4(rs);
+            if (o->ip) {
+                host_cache_store(rs->hostname, o->ip);
+            } else if (!host_cache_lookup(rs->hostname, &o->ip)) {
+                // SRV answer without an address and no cache hit: join the
+                // distinct-host A-record round below.
+                need_ip[i] = true;
+                snprintf(shost[i], sizeof shost[i], "%s", rs->hostname);
+                good = false;
+            }
+        }
+        if (!good) ESP_LOGW(TAG, "could not resolve %s", inst[i]);
+        ok[i] = good;
+        if (rs) mdns_query_results_free(rs);
+        if (rt) mdns_query_results_free(rt);
+        // qa[i]/qt[i] were consumed by gather_search (deleted or parked).
+    }
+
+    // Phase 2: A records for the distinct hosts that still have no
+    // address. All of them are asked at once and gathered under one
+    // deadline; success fills every channel of that host.
+    static char ah[UI_CHANNELS][MDNS_NAME_BUF_LEN];
+    memset(ah, 0, sizeof ah);
+    unsigned na = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (!need_ip[i]) continue;
+        unsigned k;
+        for (k = 0; k < na; k++) {
+            if (strcmp(ah[k], shost[i]) == 0) break;
+        }
+        if (k == na && k < UI_CHANNELS) {
+            snprintf(ah[na], sizeof ah[na], "%s", shost[i]);
+            na++;
+        }
+    }
+    if (na) {
+        memset(qa, 0, sizeof qa);
+        const uint32_t t_a = aoip_now_ms();
+        const uint32_t a_deadline = t_a + RESOLVE_A_MS;
+        for (unsigned k = 0; k < na; k++) {
+            qa[k] = mdns_query_async_new(ah[k], NULL, NULL, MDNS_TYPE_A, QUERY_TIMEOUT_MS, 1, NULL);
+            vTaskDelay(pdMS_TO_TICKS(8));
+        }
+        for (unsigned k = 0; k < na; k++) {
+            mdns_result_t *rs = gather_search(&qa[k], a_deadline);
+            const uint32_t ip = result_v4(rs);
+            if (ip) {
+                host_cache_store(ah[k], ip);
+                for (size_t i = 0; i < n; i++) {
+                    if (need_ip[i] && strcmp(shost[i], ah[k]) == 0) {
+                        out[i].ip = ip;
+                        ok[i] = true;
+                        need_ip[i] = false;
                     }
                 }
-                if (o->ip) {
-                    host_cache_store(rs->hostname, o->ip);
-                } else if (!host_cache_lookup(rs->hostname, &o->ip)) {
-                    esp_ip4_addr_t a4 = { 0 };
-                    if (mdns_query_a(rs->hostname, QUERY_TIMEOUT_MS, &a4) == ESP_OK) o->ip = a4.addr;
-                    if (o->ip) host_cache_store(rs->hostname, o->ip);
-                }
-                good = o->ip != 0;
             }
-            ok[base + j] = good;
-            if (!good) ESP_LOGW(TAG, "could not resolve %s", inst[j]);
             if (rs) mdns_query_results_free(rs);
-            if (rt) mdns_query_results_free(rt);
-            if (srv[j]) mdns_query_async_delete(srv[j]);
-            if (txt[j]) mdns_query_async_delete(txt[j]);
         }
     }
 }
@@ -430,26 +522,9 @@ bool aoip_mdns_query_bundle(const char *full_name, aoip_adv_bundle_t *o)
     if (mdns_query_txt(full_name, BUND_SERVICE, PROTO_UDP, QUERY_TIMEOUT_MS, &r) != ESP_OK || !r) {
         return false;
     }
-    bool good = false;
-    char buf[24];
-    uint32_t v;
-    do {
-        const char *a = txt_get(r, "a.0", buf, sizeof buf);
-        if (!a || !parse_ipv4(a, &o->ip)) break;
-        if (!txt_int(r, "p.0", &v)) break;
-        o->port = (uint16_t)v;
-        if (!txt_int(r, "nchan", &v)) break;
-        o->nchan = (uint16_t)v;
-        if (!txt_int(r, "id", &v)) break;
-        o->bundle_id = (uint16_t)v;
-        if (!txt_int(r, "enc", &v) && !txt_int(r, "en", &v)) break;
-        o->bits = v;
-        if (!txt_int(r, "fpp", &v)) break;
-        o->fpp = (uint16_t)v;
-        if (!txt_int(r, "latency_ns", &v)) break;
-        o->min_latency_ns = v;
-        good = true;
-    } while (0);
+    aoip_txt_kv_t kv[32];
+    const size_t nv = txt_view(r, kv, sizeof kv / sizeof kv[0]);
+    const bool good = mdns_txt_parse_bundle(kv, nv, o);
     mdns_query_results_free(r);
     return good;
 }

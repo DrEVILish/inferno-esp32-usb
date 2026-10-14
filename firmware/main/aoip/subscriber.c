@@ -76,17 +76,33 @@ static sub_ch_t s_ch[NCH];
 static sub_flow_t s_fl[FLOWS];
 static sub_info_t s_info[NCH];      // read by ARC under aoip_lock
 static QueueHandle_t s_cmd;
+static TaskHandle_t s_task;         // sub_start() retry tracking
 static bool s_needs_resolving, s_resolve_now;
 
 // ---------------------------------------------------------------------------
 // Interface for the ARC server (ctl task)
 // ---------------------------------------------------------------------------
-void sub_subscribe(unsigned local_ch, const char *txch, const char *host)
+// Enqueue a command. Fast path zero-wait; if the queue is momentarily full
+// (the sub task may be inside a resolve), wait a bounded window. On
+// failure the command is NOT applied and the caller answers an error: the
+// old code enqueued after publishing the visible state, so a full queue
+// silently lost the change and left "subscribed" status the task would
+// never reconcile.
+static bool cmd_send(const cmd_t *c)
 {
-    if (local_ch >= NCH || !s_cmd) return;
+    if (xQueueSend(s_cmd, c, 0) == pdTRUE) return true;
+    if (xQueueSend(s_cmd, c, pdMS_TO_TICKS(250)) == pdTRUE) return true;
+    ESP_LOGE(TAG, "command queue full, command dropped");
+    return false;
+}
+
+bool sub_subscribe(unsigned local_ch, const char *txch, const char *host)
+{
+    if (local_ch >= NCH || !s_cmd) return false;
     cmd_t c = { .type = CMD_SUBSCRIBE, .ch = (uint8_t)local_ch };
     strncpy(c.txch, txch, AOIP_NAME_LEN - 1);
     strncpy(c.host, host, AOIP_NAME_LEN - 1);
+    if (!cmd_send(&c)) return false;
     // Dante Controller asks for the RX channel list right after the reply,
     // so the status must already say "subscribed" (channels_subscriber.rs)
     aoip_lock();
@@ -95,14 +111,14 @@ void sub_subscribe(unsigned local_ch, const char *txch, const char *host)
     strcpy(s_info[local_ch].host, c.host);
     s_info[local_ch].status = SUB_STATUS_UNRESOLVED;
     aoip_unlock();
-    if (xQueueSend(s_cmd, &c, 0) != pdTRUE) ESP_LOGE(TAG, "command queue full");
+    return true;
 }
 
-void sub_unsubscribe(unsigned local_ch)
+bool sub_unsubscribe(unsigned local_ch)
 {
-    if (local_ch >= NCH || !s_cmd) return;
+    if (local_ch >= NCH || !s_cmd) return false;
     cmd_t c = { .type = CMD_UNSUBSCRIBE, .ch = (uint8_t)local_ch };
-    if (xQueueSend(s_cmd, &c, 0) != pdTRUE) ESP_LOGE(TAG, "command queue full");
+    return cmd_send(&c);
 }
 
 void sub_get_info(unsigned local_ch, sub_info_t *out)
@@ -613,10 +629,17 @@ static void sub_task(void *arg)
 
 esp_err_t sub_start(void)
 {
-    for (unsigned i = 0; i < NCH; i++) s_ch[i].flow = -1;
-    s_cmd = xQueueCreate(64, sizeof(cmd_t));
-    if (!s_cmd) return ESP_ERR_NO_MEM;
-    BaseType_t ok = xTaskCreatePinnedToCore(sub_task, "aoip_sub", 6144, NULL, UI_PRIO_CONTROL - 1,
-                                            NULL, UI_CORE_USB);
-    return ok == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
+    if (s_task) return ESP_OK;      // already running (retry call)
+    if (!s_cmd) {
+        for (unsigned i = 0; i < NCH; i++) s_ch[i].flow = -1;
+        s_cmd = xQueueCreate(64, sizeof(cmd_t));
+        if (!s_cmd) return ESP_ERR_NO_MEM;
+    }
+    TaskHandle_t t;
+    if (xTaskCreatePinnedToCore(sub_task, "aoip_sub", 6144, NULL, UI_PRIO_CONTROL - 1,
+                                &t, UI_CORE_USB) != pdPASS) {
+        return ESP_ERR_NO_MEM;      // retryable: queue already built
+    }
+    s_task = t;
+    return ESP_OK;
 }

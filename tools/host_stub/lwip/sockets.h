@@ -10,3 +10,4 @@ ssize_t host_sendto_capture(int s, const void *buf, size_t len, int flags,
                             const struct sockaddr *dst, socklen_t slen);
 
 #define sendto host_sendto_capture
+#include <unistd.h>

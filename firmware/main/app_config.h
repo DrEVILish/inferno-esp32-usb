@@ -32,6 +32,15 @@
 #endif
 #endif
 
+// Cycle-probe instrumentation of the packet paths (sys/perf.h). Default on
+// (the bench matrix measures with them); a production image may turn the
+// option off once measured (Kconfig USBINF_PERF_PROBES, docs/15 §1).
+#if defined(CONFIG_USBINF_PERF_PROBES) && !CONFIG_USBINF_PERF_PROBES
+#define UI_PERF_PROBES          0u
+#else
+#define UI_PERF_PROBES          1u
+#endif
+
 // ---------------------------------------------------------------------------
 // Audio format (fixed)
 // ---------------------------------------------------------------------------

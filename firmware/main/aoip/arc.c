@@ -409,12 +409,16 @@ static bool rx_flow_item(bb_t *bb, size_t i, uint8_t *out, void *vctx)
 }
 
 // ---------------------------------------------------------------------------
-// 0x3010 subscriptions, 0x3014 netaudio unsubscribe
-// ---------------------------------------------------------------------------
-static void op_set_subscriptions(const uint8_t *c, size_t clen)
+// 0x3010 subscriptions, 0x3014 netaudio unsubscribe.
+// Inferno reports these asynchronously (the request is queued and its ARC
+// reply is unconditional OK); the reply says TODO ERROR only when the
+// command could not even be enqueued (queue full), so the controller's
+// view can never say "subscribed" while the subscriber lost the command.
+static uint16_t op_set_subscriptions(const uint8_t *c, size_t clen)
 {
     size_t n = clen >= 2 ? c[1] : 0;
     if (n > clen / ARC_SZ_SUBSCRIPTION_REQ) n = clen / ARC_SZ_SUBSCRIPTION_REQ;
+    uint16_t code = RR_CODE_OK;
     for (size_t k = 0; k < n; k++) {
         const uint8_t *it = c + 2 + k * ARC_SZ_SUBSCRIPTION_REQ;
         if ((size_t)(it - c) + ARC_SZ_SUBSCRIPTION_REQ > clen) break;
@@ -435,15 +439,16 @@ static void op_set_subscriptions(const uint8_t *c, size_t clen)
                        rd_str0(c, clen, host_off - RR_HEADER_LEN, host, sizeof host);
             if (ok1 && ok2) {
                 ESP_LOGI(TAG, "connection requested: %u <- %s@%s", local_id, txch, host);
-                sub_subscribe(lci, txch, host);
+                if (!sub_subscribe(lci, txch, host)) code = RR_CODE_TODO_ERROR;
             } else {
                 ESP_LOGW(TAG, "couldn't read tx names from subscription request");
             }
         } else {
             ESP_LOGI(TAG, "disconnect requested: local channel %u", local_id);
-            sub_unsubscribe(lci);
+            if (!sub_unsubscribe(lci)) code = RR_CODE_TODO_ERROR;
         }
     }
+    return code;
 }
 
 // ---------------------------------------------------------------------------
@@ -641,14 +646,14 @@ size_t arc_handle(const uint8_t *req, size_t len, uint8_t *out, size_t cap)
         break;
     }
     case ARC_OP_SET_SUBSCRIPTIONS:
-        op_set_subscriptions(c, clen);
+        code = op_set_subscriptions(c, clen);
         break;
     case ARC_OP_NETAUDIO_UNSUBSCRIBE: {
         if (clen < 6) return 0;
         uint16_t local = rd16(c + 4);
         if (local == 0 || local > UI_CHANNELS) return 0;
         ESP_LOGI(TAG, "disconnect requested: local channel %u", local);
-        sub_unsubscribe(local - 1u);
+        if (!sub_unsubscribe(local - 1u)) code = RR_CODE_TODO_ERROR;
         break;
     }
     default:
